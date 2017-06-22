@@ -35,6 +35,14 @@ static QemuOptsList throttle_opts = {
     },
 };
 
+static BlockDriver bdrv_throttle;
+
+ThrottleGroupMember *throttle_get_tgm(BlockDriverState *bs)
+{
+    assert(bs->drv == &bdrv_throttle);
+    return (ThrottleGroupMember *)bs->opaque;
+}
+
 static int throttle_configure_tgm(BlockDriverState *bs,
                                   ThrottleGroupMember *tgm,
                                   QDict *options, Error **errp)

@@ -671,7 +671,6 @@ static void test_groups(void)
 {
     ThrottleConfig cfg1, cfg2;
     BlockBackend *blk1, *blk2, *blk3;
-    BlockBackendPublic *blkp1, *blkp2, *blkp3;
     ThrottleGroupMember *tgm1, *tgm2, *tgm3;
 
     /* No actual I/O is performed on these devices */
@@ -679,13 +678,9 @@ static void test_groups(void)
     blk2 = blk_new(0, BLK_PERM_ALL);
     blk3 = blk_new(0, BLK_PERM_ALL);
 
-    blkp1 = blk_get_public(blk1);
-    blkp2 = blk_get_public(blk2);
-    blkp3 = blk_get_public(blk3);
-
-    tgm1 = &blkp1->throttle_group_member;
-    tgm2 = &blkp2->throttle_group_member;
-    tgm3 = &blkp3->throttle_group_member;
+    tgm1 = g_new0(ThrottleGroupMember, 1);
+    tgm2 = g_new0(ThrottleGroupMember, 1);
+    tgm3 = g_new0(ThrottleGroupMember, 1);
 
     g_assert(tgm1->throttle_state == NULL);
     g_assert(tgm2->throttle_state == NULL);
@@ -732,6 +727,14 @@ static void test_groups(void)
     g_assert(tgm1->throttle_state == NULL);
     g_assert(tgm2->throttle_state == NULL);
     g_assert(tgm3->throttle_state == NULL);
+
+    g_free(tgm1);
+    g_free(tgm2);
+    g_free(tgm3);
+
+    blk_unref(blk1);
+    blk_unref(blk2);
+    blk_unref(blk3);
 }
 
 int main(int argc, char **argv)
