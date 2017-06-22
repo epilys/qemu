@@ -37,7 +37,10 @@ struct BlockBackend {
     DriveInfo *legacy_dinfo;    /* null unless created by drive_new() */
     QTAILQ_ENTRY(BlockBackend) link;         /* for block_backends */
     QTAILQ_ENTRY(BlockBackend) monitor_link; /* for monitor_block_backends */
-    BlockBackendPublic public;
+
+    /* implicit throttle filter node for backwards compatibility with legacy
+     * throttling commands */
+    BlockDriverState *throttle_node;
 
     void *dev;                  /* attached device model, if any */
     bool legacy_dev;            /* true if dev is not a DeviceState */
@@ -320,7 +323,7 @@ static void blk_delete(BlockBackend *blk)
     assert(!blk->refcnt);
     assert(!blk->name);
     assert(!blk->dev);
-    if (blk->public.throttle_node) {
+    if (blk->throttle_node) {
         blk_io_limits_disable(blk);
     }
     if (blk->root) {
@@ -615,19 +618,11 @@ BlockBackend *blk_by_legacy_dinfo(DriveInfo *dinfo)
 }
 
 /*
- * Returns a pointer to the publicly accessible fields of @blk.
+ * Returns the throttle_node field of @blk.
  */
-BlockBackendPublic *blk_get_public(BlockBackend *blk)
+BlockDriverState *blk_get_throttle_node(BlockBackend *blk)
 {
-    return &blk->public;
-}
-
-/*
- * Returns a BlockBackend given the associated @public fields.
- */
-BlockBackend *blk_by_public(BlockBackendPublic *public)
-{
-    return container_of(public, BlockBackend, public);
+    return blk->throttle_node;
 }
 
 /*
@@ -1920,15 +1915,15 @@ int blk_commit_all(void)
 /* throttling disk I/O limits */
 void blk_set_io_limits(BlockBackend *blk, ThrottleConfig *cfg)
 {
-    assert(blk->public.throttle_node);
-    throttle_group_config(throttle_get_tgm(blk->public.throttle_node), cfg);
+    assert(blk->throttle_node);
+    throttle_group_config(throttle_get_tgm(blk->throttle_node), cfg);
 }
 
 void blk_io_limits_disable(BlockBackend *blk)
 {
     BlockDriverState *bs, *throttle_node;
 
-    throttle_node = blk_get_public(blk)->throttle_node;
+    throttle_node = blk->throttle_node;
 
     assert(throttle_node);
 
@@ -1944,7 +1939,7 @@ void blk_io_limits_disable(BlockBackend *blk)
      * blk, at this point it might have more than one parent, so use
      * bdrv_replace_node(). This destroys throttle_node */
     bdrv_replace_node(throttle_node, bs, &error_abort);
-    blk_get_public(blk)->throttle_node = NULL;
+    blk->throttle_node = NULL;
 
     bdrv_unref(bs);
     bdrv_drained_end(bs);
@@ -1994,7 +1989,7 @@ void blk_io_limits_enable(BlockBackend *blk, const char *group,  Error **errp)
 
 end:
     bdrv_drained_end(bs);
-    blk_get_public(blk)->throttle_node = throttle_node;
+    blk->throttle_node = throttle_node;
 }
 
 void blk_io_limits_update_group(BlockBackend *blk, const char *group, Error **errp)
@@ -2002,11 +1997,11 @@ void blk_io_limits_update_group(BlockBackend *blk, const char *group, Error **er
     ThrottleGroupMember *tgm;
 
     /* this BB is not part of any group */
-    if (!blk->public.throttle_node) {
+    if (!blk->throttle_node) {
         return;
     }
 
-    tgm = throttle_get_tgm(blk->public.throttle_node);
+    tgm = throttle_get_tgm(blk->throttle_node);
     /* this BB is a part of the same group than the one we want */
     if (!g_strcmp0(throttle_group_get_name(tgm), group)) {
         return;
@@ -2030,8 +2025,8 @@ static void blk_root_drained_begin(BdrvChild *child)
 
     /* Note that blk->root may not be accessible here yet if we are just
      * attaching to a BlockDriverState that is drained. Use child instead. */
-    if (blk->public.throttle_node) {
-        tgm = throttle_get_tgm(blk->public.throttle_node);
+    if (blk->throttle_node) {
+        tgm = throttle_get_tgm(blk->throttle_node);
         if (atomic_fetch_inc(&tgm->io_limits_disabled) == 0) {
             throttle_group_restart_tgm(tgm);
         }
@@ -2044,8 +2039,8 @@ static void blk_root_drained_end(BdrvChild *child)
     BlockBackend *blk = child->opaque;
     assert(blk->quiesce_counter);
 
-    if (blk->public.throttle_node) {
-        tgm = throttle_get_tgm(blk->public.throttle_node);
+    if (blk->throttle_node) {
+        tgm = throttle_get_tgm(blk->throttle_node);
         assert(tgm->io_limits_disabled);
         atomic_dec(&tgm->io_limits_disabled);
     }
