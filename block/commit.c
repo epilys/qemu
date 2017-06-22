@@ -332,7 +332,7 @@ void commit_start(const char *job_id, BlockDriverState *bs,
     /* Insert commit_top block node above top, so we can block consistent read
      * on the backing chain below it */
     commit_top_bs = bdrv_new_open_driver(&bdrv_commit_top, filter_node_name, 0,
-                                         errp);
+                                         NULL, errp);
     if (commit_top_bs == NULL) {
         goto fail;
     }
@@ -484,7 +484,7 @@ int bdrv_commit(BlockDriverState *bs)
     backing_file_bs = backing_bs(bs);
 
     commit_top_bs = bdrv_new_open_driver(&bdrv_commit_top, NULL, BDRV_O_RDWR,
-                                         &local_err);
+                                         NULL, &local_err);
     if (commit_top_bs == NULL) {
         error_report_err(local_err);
         goto ro_cleanup;
