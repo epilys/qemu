@@ -2714,7 +2714,7 @@ void qmp_block_set_io_throttle(BlockIOThrottle *arg, Error **errp)
     if (throttle_enabled(&cfg)) {
         /* Enable I/O limits if they're not enabled yet, otherwise
          * just update the throttling group. */
-        if (!blk_get_public(blk)->throttle_node) {
+        if (!blk_get_throttle_node(blk)) {
             blk_io_limits_enable(blk, arg->has_group ? arg->group :
                                  arg->has_device ? arg->device : arg->id,
                                  &local_err);
@@ -2733,10 +2733,10 @@ void qmp_block_set_io_throttle(BlockIOThrottle *arg, Error **errp)
             }
         }
 
-        throttle_node = blk_get_public(blk)->throttle_node;
+        throttle_node = blk_get_throttle_node(blk);
         tgm = throttle_get_tgm(throttle_node);
         throttle_group_config(tgm, &cfg);
-    } else if (blk_get_public(blk)->throttle_node) {
+    } else if (blk_get_throttle_node(blk)) {
         /*
          * If all throttling settings are set to 0, disable I/O limits
          * by deleting the legacy throttle node

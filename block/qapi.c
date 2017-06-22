@@ -66,9 +66,9 @@ BlockDeviceInfo *bdrv_block_device_info(BlockBackend *blk,
 
     info->detect_zeroes = bs->detect_zeroes;
 
-    if (blk && blk_get_public(blk)->throttle_node) {
+    if (blk && blk_get_throttle_node(blk)) {
         ThrottleConfig cfg;
-        BlockDriverState *throttle_node = blk_get_public(blk)->throttle_node;
+        BlockDriverState *throttle_node = blk_get_throttle_node(blk);
         ThrottleGroupMember *tgm = throttle_get_tgm(throttle_node);
 
         throttle_group_get_config(tgm, &cfg);
