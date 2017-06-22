@@ -81,5 +81,6 @@ void throttle_group_detach_aio_context(ThrottleGroupMember *tgm);
  * mutex.
  */
 bool throttle_group_exists(const char *name);
+ThrottleGroupMember *throttle_get_tgm(BlockDriverState *bs);
 
 #endif

@@ -15,6 +15,7 @@
 #include "block/block_int.h"
 #include "block/blockjob.h"
 #include "block/throttle-groups.h"
+#include "qemu/throttle-options.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/sysemu.h"
 #include "qapi-event.h"
@@ -319,7 +320,7 @@ static void blk_delete(BlockBackend *blk)
     assert(!blk->refcnt);
     assert(!blk->name);
     assert(!blk->dev);
-    if (blk->public.throttle_group_member.throttle_state) {
+    if (blk->public.throttle_node) {
         blk_io_limits_disable(blk);
     }
     if (blk->root) {
@@ -634,13 +635,7 @@ BlockBackend *blk_by_public(BlockBackendPublic *public)
  */
 void blk_remove_bs(BlockBackend *blk)
 {
-    ThrottleTimers *tt;
-
     notifier_list_notify(&blk->remove_bs_notifiers, blk);
-    if (blk->public.throttle_group_member.throttle_state) {
-        tt = &blk->public.throttle_group_member.throttle_timers;
-        throttle_timers_detach_aio_context(tt);
-    }
 
     blk_update_root_state(blk);
 
@@ -661,12 +656,6 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
     bdrv_ref(bs);
 
     notifier_list_notify(&blk->insert_bs_notifiers, blk);
-    if (blk->public.throttle_group_member.throttle_state) {
-        throttle_timers_attach_aio_context(
-            &blk->public.throttle_group_member.throttle_timers,
-            bdrv_get_aio_context(bs));
-    }
-
     return 0;
 }
 
@@ -1024,13 +1013,6 @@ int coroutine_fn blk_co_preadv(BlockBackend *blk, int64_t offset,
     }
 
     bdrv_inc_in_flight(bs);
-
-    /* throttling disk I/O */
-    if (blk->public.throttle_group_member.throttle_state) {
-        throttle_group_co_io_limits_intercept(&blk->public.throttle_group_member,
-                bytes, false);
-    }
-
     ret = bdrv_co_preadv(blk->root, offset, bytes, qiov, flags);
     bdrv_dec_in_flight(bs);
     return ret;
@@ -1051,11 +1033,6 @@ int coroutine_fn blk_co_pwritev(BlockBackend *blk, int64_t offset,
     }
 
     bdrv_inc_in_flight(bs);
-    /* throttling disk I/O */
-    if (blk->public.throttle_group_member.throttle_state) {
-        throttle_group_co_io_limits_intercept(&blk->public.throttle_group_member,
-                bytes, true);
-    }
 
     if (!blk->enable_write_cache) {
         flags |= BDRV_REQ_FUA;
@@ -1723,13 +1700,8 @@ static AioContext *blk_aiocb_get_aio_context(BlockAIOCB *acb)
 void blk_set_aio_context(BlockBackend *blk, AioContext *new_context)
 {
     BlockDriverState *bs = blk_bs(blk);
-    ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
 
     if (bs) {
-        if (tgm->throttle_state) {
-            throttle_group_detach_aio_context(tgm);
-            throttle_group_attach_aio_context(tgm, new_context);
-        }
         bdrv_set_aio_context(bs, new_context);
     }
 }
@@ -1948,45 +1920,101 @@ int blk_commit_all(void)
 /* throttling disk I/O limits */
 void blk_set_io_limits(BlockBackend *blk, ThrottleConfig *cfg)
 {
-    throttle_group_config(&blk->public.throttle_group_member, cfg);
+    assert(blk->public.throttle_node);
+    throttle_group_config(throttle_get_tgm(blk->public.throttle_node), cfg);
 }
 
 void blk_io_limits_disable(BlockBackend *blk)
 {
-    assert(blk->public.throttle_group_member.throttle_state);
-    bdrv_drained_begin(blk_bs(blk));
-    throttle_group_unregister_tgm(&blk->public.throttle_group_member);
-    bdrv_drained_end(blk_bs(blk));
+    BlockDriverState *bs, *throttle_node;
+
+    throttle_node = blk_get_public(blk)->throttle_node;
+
+    assert(throttle_node);
+
+    bs = throttle_node->file->bs;
+    bdrv_drained_begin(bs);
+
+    /* Ref throttle_node's child bs to ensure it won't go away */
+    bdrv_ref(bs);
+
+    bdrv_child_try_set_perm(throttle_node->file, 0, BLK_PERM_ALL,
+                            &error_abort);
+    /* Replace throttle_node with bs. While throttle_node was inserted under
+     * blk, at this point it might have more than one parent, so use
+     * bdrv_replace_node(). This destroys throttle_node */
+    bdrv_replace_node(throttle_node, bs, &error_abort);
+    blk_get_public(blk)->throttle_node = NULL;
+
+    bdrv_unref(bs);
+    bdrv_drained_end(bs);
+
 }
 
 /* should be called before blk_set_io_limits if a limit is set */
-void blk_io_limits_enable(BlockBackend *blk, const char *group)
+void blk_io_limits_enable(BlockBackend *blk, const char *group,  Error **errp)
 {
-    assert(!blk->public.throttle_group_member.throttle_state);
-    throttle_group_register_tgm(&blk->public.throttle_group_member,
-                                group, blk_get_aio_context(blk));
+    BlockDriverState *bs = blk_bs(blk), *throttle_node;
+    QDict *options = qdict_new();
+    Error *local_err = NULL;
+    ThrottleState *ts;
+
+    bdrv_drained_begin(bs);
+
+    /* Force creation of group in case it doesn't exist */
+    ts = throttle_group_incref(group);
+    qdict_set_default_str(options, "file", bs->node_name);
+    qdict_set_default_str(options, QEMU_OPT_THROTTLE_GROUP_NAME, group);
+    throttle_node = bdrv_new_open_driver(bdrv_find_format("throttle"), NULL,
+                                         bdrv_get_flags(bs), options, errp);
+    if (!throttle_node) {
+        goto end;
+    }
+    throttle_node->implicit = true;
+
+    blk_remove_bs(blk);
+    blk_insert_bs(blk, throttle_node, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        blk_insert_bs(blk, bs, &error_abort);
+        bdrv_unref(throttle_node);
+        throttle_node = NULL;
+        goto end;
+    }
+    bdrv_unref(throttle_node);
+
+    assert(throttle_node->file->bs == bs);
+    assert(throttle_node->refcnt == 1);
+
+end:
+    throttle_group_unref(ts);
+    bdrv_drained_end(bs);
+    blk_get_public(blk)->throttle_node = throttle_node;
 }
 
-void blk_io_limits_update_group(BlockBackend *blk, const char *group)
+void blk_io_limits_update_group(BlockBackend *blk, const char *group, Error **errp)
 {
+    ThrottleGroupMember *tgm;
+
     /* this BB is not part of any group */
-    if (!blk->public.throttle_group_member.throttle_state) {
+    if (!blk->public.throttle_node) {
         return;
     }
 
+    tgm = throttle_get_tgm(blk->public.throttle_node);
     /* this BB is a part of the same group than the one we want */
-    if (!g_strcmp0(throttle_group_get_name(&blk->public.throttle_group_member),
-                group)) {
+    if (!g_strcmp0(throttle_group_get_name(tgm), group)) {
         return;
     }
 
-    /* need to change the group this bs belong to */
+    /* need to change the group this bs belongs to */
     blk_io_limits_disable(blk);
-    blk_io_limits_enable(blk, group);
+    blk_io_limits_enable(blk, group, errp);
 }
 
 static void blk_root_drained_begin(BdrvChild *child)
 {
+    ThrottleGroupMember *tgm;
     BlockBackend *blk = child->opaque;
 
     if (++blk->quiesce_counter == 1) {
@@ -1997,19 +2025,25 @@ static void blk_root_drained_begin(BdrvChild *child)
 
     /* Note that blk->root may not be accessible here yet if we are just
      * attaching to a BlockDriverState that is drained. Use child instead. */
-
-    if (atomic_fetch_inc(&blk->public.throttle_group_member.io_limits_disabled) == 0) {
-        throttle_group_restart_tgm(&blk->public.throttle_group_member);
+    if (blk->public.throttle_node) {
+        tgm = throttle_get_tgm(blk->public.throttle_node);
+        if (atomic_fetch_inc(&tgm->io_limits_disabled) == 0) {
+            throttle_group_restart_tgm(tgm);
+        }
     }
 }
 
 static void blk_root_drained_end(BdrvChild *child)
 {
+    ThrottleGroupMember *tgm;
     BlockBackend *blk = child->opaque;
     assert(blk->quiesce_counter);
 
-    assert(blk->public.throttle_group_member.io_limits_disabled);
-    atomic_dec(&blk->public.throttle_group_member.io_limits_disabled);
+    if (blk->public.throttle_node) {
+        tgm = throttle_get_tgm(blk->public.throttle_node);
+        assert(tgm->io_limits_disabled);
+        atomic_dec(&tgm->io_limits_disabled);
+    }
 
     if (--blk->quiesce_counter == 0) {
         if (blk->dev_ops && blk->dev_ops->drained_end) {

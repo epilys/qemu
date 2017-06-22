@@ -73,7 +73,7 @@ typedef struct BlockDevOps {
  * friends so that BlockBackends can be kept in lists outside block-backend.c
  * */
 typedef struct BlockBackendPublic {
-    ThrottleGroupMember throttle_group_member;
+    BlockDriverState *throttle_node;
 } BlockBackendPublic;
 
 BlockBackend *blk_new(uint64_t perm, uint64_t shared_perm);
@@ -225,7 +225,7 @@ BlockAIOCB *blk_abort_aio_request(BlockBackend *blk,
 
 void blk_set_io_limits(BlockBackend *blk, ThrottleConfig *cfg);
 void blk_io_limits_disable(BlockBackend *blk);
-void blk_io_limits_enable(BlockBackend *blk, const char *group);
-void blk_io_limits_update_group(BlockBackend *blk, const char *group);
+void blk_io_limits_enable(BlockBackend *blk, const char *group, Error **errp);
+void blk_io_limits_update_group(BlockBackend *blk, const char *group, Error **errp);
 
 #endif

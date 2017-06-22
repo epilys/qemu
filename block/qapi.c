@@ -66,11 +66,12 @@ BlockDeviceInfo *bdrv_block_device_info(BlockBackend *blk,
 
     info->detect_zeroes = bs->detect_zeroes;
 
-    if (blk && blk_get_public(blk)->throttle_group_member.throttle_state) {
+    if (blk && blk_get_public(blk)->throttle_node) {
         ThrottleConfig cfg;
-        BlockBackendPublic *blkp = blk_get_public(blk);
+        BlockDriverState *throttle_node = blk_get_public(blk)->throttle_node;
+        ThrottleGroupMember *tgm = throttle_get_tgm(throttle_node);
 
-        throttle_group_get_config(&blkp->throttle_group_member, &cfg);
+        throttle_group_get_config(tgm, &cfg);
 
         info->bps     = cfg.buckets[THROTTLE_BPS_TOTAL].avg;
         info->bps_rd  = cfg.buckets[THROTTLE_BPS_READ].avg;
@@ -118,8 +119,7 @@ BlockDeviceInfo *bdrv_block_device_info(BlockBackend *blk,
         info->iops_size = cfg.op_size;
 
         info->has_group = true;
-        info->group =
-            g_strdup(throttle_group_get_name(&blkp->throttle_group_member));
+        info->group = g_strdup(throttle_group_get_name(tgm));
     }
 
     info->write_threshold = bdrv_write_threshold_get(bs);
