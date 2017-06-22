@@ -1153,16 +1153,26 @@ open_failed:
     return ret;
 }
 
+/*
+ * If options is not NULL, its ownership is transferred to the block layer. The
+ * caller must use QINCREF() if they wish to keep ownership.
+ */
 BlockDriverState *bdrv_new_open_driver(BlockDriver *drv, const char *node_name,
-                                       int flags, Error **errp)
+                                       int flags, QDict *options, Error **errp)
 {
     BlockDriverState *bs;
     int ret;
 
     bs = bdrv_new();
     bs->open_flags = flags;
-    bs->explicit_options = qdict_new();
-    bs->options = qdict_new();
+    if (options) {
+        bs->explicit_options = qdict_clone_shallow(options);
+        bs->options = qdict_clone_shallow(options);
+        QDECREF(options);
+    } else {
+        bs->explicit_options = qdict_new();
+        bs->options = qdict_new();
+    }
     bs->opaque = NULL;
 
     update_options_from_flags(bs->options, flags);

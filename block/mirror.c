@@ -1164,7 +1164,7 @@ static void mirror_start_job(const char *job_id, BlockDriverState *bs,
      * reads on the top, while disabling it in the intermediate nodes, and make
      * the backing chain writable. */
     mirror_top_bs = bdrv_new_open_driver(&bdrv_mirror_top, filter_node_name,
-                                         BDRV_O_RDWR, errp);
+                                         BDRV_O_RDWR, NULL, errp);
     if (mirror_top_bs == NULL) {
         return;
     }
