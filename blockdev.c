@@ -607,7 +607,14 @@ static BlockBackend *blockdev_init(const char *file, QDict *bs_opts,
         if (!throttling_group) {
             throttling_group = id;
         }
-        blk_io_limits_enable(blk, throttling_group);
+        blk_io_limits_enable(blk, throttling_group, &error);
+        if (error) {
+            error_propagate(errp, error);
+            blk_unref(blk);
+            blk = NULL;
+            goto err_no_bs_opts;
+
+        }
         blk_set_io_limits(blk, &cfg);
     }
 
@@ -2629,6 +2636,9 @@ void qmp_block_set_io_throttle(BlockIOThrottle *arg, Error **errp)
     BlockDriverState *bs;
     BlockBackend *blk;
     AioContext *aio_context;
+    BlockDriverState *throttle_node = NULL;
+    ThrottleGroupMember *tgm;
+    Error *local_err = NULL;
 
     blk = qmp_get_blk(arg->has_device ? arg->device : NULL,
                       arg->has_id ? arg->id : NULL,
@@ -2704,18 +2714,33 @@ void qmp_block_set_io_throttle(BlockIOThrottle *arg, Error **errp)
     if (throttle_enabled(&cfg)) {
         /* Enable I/O limits if they're not enabled yet, otherwise
          * just update the throttling group. */
-        if (!blk_get_public(blk)->throttle_group_member.throttle_state) {
-            blk_io_limits_enable(blk,
-                                 arg->has_group ? arg->group :
-                                 arg->has_device ? arg->device :
-                                 arg->id);
-        } else if (arg->has_group) {
-            blk_io_limits_update_group(blk, arg->group);
+        if (!blk_get_public(blk)->throttle_node) {
+            blk_io_limits_enable(blk, arg->has_group ? arg->group :
+                                 arg->has_device ? arg->device : arg->id,
+                                 &local_err);
+            if (local_err) {
+                error_propagate(errp, local_err);
+                goto out;
+            }
         }
-        /* Set the new throttling configuration */
-        blk_set_io_limits(blk, &cfg);
-    } else if (blk_get_public(blk)->throttle_group_member.throttle_state) {
-        /* If all throttling settings are set to 0, disable I/O limits */
+
+        if (arg->has_group) {
+            /* move throttle node membership to arg->group */
+            blk_io_limits_update_group(blk, arg->group, &local_err);
+            if (local_err) {
+                error_propagate(errp, local_err);
+                goto out;
+            }
+        }
+
+        throttle_node = blk_get_public(blk)->throttle_node;
+        tgm = throttle_get_tgm(throttle_node);
+        throttle_group_config(tgm, &cfg);
+    } else if (blk_get_public(blk)->throttle_node) {
+        /*
+         * If all throttling settings are set to 0, disable I/O limits
+         * by deleting the legacy throttle node
+         * */
         blk_io_limits_disable(blk);
     }
 

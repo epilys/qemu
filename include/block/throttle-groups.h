@@ -76,5 +76,6 @@ void coroutine_fn throttle_group_co_io_limits_intercept(ThrottleGroupMember *tgm
 void throttle_group_attach_aio_context(ThrottleGroupMember *tgm,
                                        AioContext *new_context);
 void throttle_group_detach_aio_context(ThrottleGroupMember *tgm);
+ThrottleGroupMember *throttle_get_tgm(BlockDriverState *bs);
 
 #endif

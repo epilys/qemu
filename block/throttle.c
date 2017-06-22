@@ -38,6 +38,14 @@ static QemuOptsList throttle_opts = {
     },
 };
 
+static BlockDriver bdrv_throttle;
+
+ThrottleGroupMember *throttle_get_tgm(BlockDriverState *bs)
+{
+    assert(bs->drv == &bdrv_throttle);
+    return (ThrottleGroupMember *)bs->opaque;
+}
+
 /* Extract ThrottleConfig options. Assumes cfg is initialized and will be
  * checked for validity.
  *
