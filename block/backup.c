@@ -43,7 +43,7 @@ typedef struct BackupBlockJob {
     unsigned long *done_bitmap;
     int64_t cluster_size;
     bool compress;
-    NotifierWithReturn before_write;
+    BlockDriverState *filter;
     QLIST_HEAD(, CowRequest) inflight_reqs;
 } BackupBlockJob;
 
@@ -87,7 +87,7 @@ static void cow_request_end(CowRequest *req)
 static int coroutine_fn backup_do_cow(BackupBlockJob *job,
                                       int64_t offset, uint64_t bytes,
                                       bool *error_is_read,
-                                      bool is_write_notifier)
+                                      bool is_filter_write)
 {
     BlockBackend *blk = job->common.blk;
     CowRequest cow_request;
@@ -126,7 +126,7 @@ static int coroutine_fn backup_do_cow(BackupBlockJob *job,
         qemu_iovec_init_external(&bounce_qiov, &iov, 1);
 
         ret = blk_co_preadv(blk, start, bounce_qiov.size, &bounce_qiov,
-                            is_write_notifier ? BDRV_REQ_NO_SERIALISING : 0);
+                            is_filter_write ? BDRV_REQ_NO_SERIALISING : 0);
         if (ret < 0) {
             trace_backup_do_cow_read_fail(job, start, ret);
             if (error_is_read) {
@@ -174,20 +174,6 @@ out:
     return ret;
 }
 
-static int coroutine_fn backup_before_write_notify(
-        NotifierWithReturn *notifier,
-        void *opaque)
-{
-    BackupBlockJob *job = container_of(notifier, BackupBlockJob, before_write);
-    BdrvTrackedRequest *req = opaque;
-
-    assert(req->bs == blk_bs(job->common.blk));
-    assert(QEMU_IS_ALIGNED(req->offset, BDRV_SECTOR_SIZE));
-    assert(QEMU_IS_ALIGNED(req->bytes, BDRV_SECTOR_SIZE));
-
-    return backup_do_cow(job, req->offset, req->bytes, NULL, true);
-}
-
 static void backup_set_speed(BlockJob *job, int64_t speed, Error **errp)
 {
     BackupBlockJob *s = container_of(job, BackupBlockJob, common);
@@ -202,7 +188,8 @@ static void backup_set_speed(BlockJob *job, int64_t speed, Error **errp)
 static void backup_cleanup_sync_bitmap(BackupBlockJob *job, int ret)
 {
     BdrvDirtyBitmap *bm;
-    BlockDriverState *bs = blk_bs(job->common.blk);
+    BlockDriverState *bs = child_bs(blk_bs(job->common.blk));
+    assert(bs);
 
     if (ret < 0 || block_job_is_cancelled(&job->common)) {
         /* Merge the successor back into the parent, delete nothing. */
@@ -234,9 +221,31 @@ static void backup_abort(BlockJob *job)
 static void backup_clean(BlockJob *job)
 {
     BackupBlockJob *s = container_of(job, BackupBlockJob, common);
+    BlockDriverState *filter = s->filter;
+    BlockDriverState *bs = child_bs(filter);
+
     assert(s->target);
     blk_unref(s->target);
     s->target = NULL;
+
+    /* make sure nothing goes away while removing filter */
+    bdrv_ref(filter);
+    bdrv_ref(bs);
+    bdrv_drained_begin(bs);
+
+    block_job_remove_all_bdrv(job);
+    bdrv_child_try_set_perm(filter->file, 0, BLK_PERM_ALL,
+                            &error_abort);
+    bdrv_replace_node(filter, bs, &error_abort);
+
+    blk_remove_bs(job->blk);
+    blk_set_perm(job->blk, 0, BLK_PERM_ALL, &error_abort);
+    blk_insert_bs(job->blk, filter, &error_abort);
+
+    bdrv_drained_end(bs);
+    bdrv_unref(filter);
+    bdrv_unref(bs);
+    s->filter = NULL;
 }
 
 static void backup_attached_aio_context(BlockJob *job, AioContext *aio_context)
@@ -421,6 +430,18 @@ out:
     return ret;
 }
 
+static void backup_top_enable(BackupBlockJob *job)
+{
+    BackupBlockJob **jobp = job->filter->opaque;
+    *jobp = job;
+}
+
+static void backup_top_disable(BackupBlockJob *job)
+{
+    BackupBlockJob **jobp = job->filter->opaque;
+    *jobp = NULL;
+}
+
 static void coroutine_fn backup_run(void *opaque)
 {
     BackupBlockJob *job = opaque;
@@ -435,13 +456,12 @@ static void coroutine_fn backup_run(void *opaque)
     job->done_bitmap = bitmap_new(DIV_ROUND_UP(job->common.len,
                                                job->cluster_size));
 
-    job->before_write.notify = backup_before_write_notify;
-    bdrv_add_before_write_notifier(bs, &job->before_write);
+    backup_top_enable(job);
 
     if (job->sync_mode == MIRROR_SYNC_MODE_NONE) {
         while (!block_job_is_cancelled(&job->common)) {
-            /* Yield until the job is cancelled.  We just let our before_write
-             * notify callback service CoW requests. */
+            /* Yield until the job is cancelled.  We just let our backup_top
+             * filter service CoW requests. */
             block_job_yield(&job->common);
         }
     } else if (job->sync_mode == MIRROR_SYNC_MODE_INCREMENTAL) {
@@ -507,8 +527,7 @@ static void coroutine_fn backup_run(void *opaque)
             }
         }
     }
-
-    notifier_with_return_remove(&job->before_write);
+    backup_top_disable(job);
 
     /* wait until pending backup_do_cow() calls have completed */
     qemu_co_rwlock_wrlock(&job->flush_rwlock);
@@ -532,6 +551,117 @@ static const BlockJobDriver backup_job_driver = {
     .drain                  = backup_drain,
 };
 
+static int coroutine_fn backup_top_co_preadv(BlockDriverState *bs,
+                                             uint64_t offset,
+                                             uint64_t bytes,
+                                             QEMUIOVector *qiov, int flags)
+{
+    return bdrv_co_preadv(bs->file, offset, bytes, qiov, flags);
+}
+
+static int coroutine_fn backup_top_co_pwritev(BlockDriverState *bs,
+                                              uint64_t offset,
+                                              uint64_t bytes,
+                                              QEMUIOVector *qiov, int flags)
+{
+    int ret = 0;
+    BackupBlockJob *job = *(BackupBlockJob **)bs->opaque;
+    if (job) {
+        assert(bs == blk_bs(job->common.blk));
+        assert(QEMU_IS_ALIGNED(offset, BDRV_SECTOR_SIZE));
+        assert(QEMU_IS_ALIGNED(bytes, BDRV_SECTOR_SIZE));
+        ret = backup_do_cow(job, offset, bytes, NULL, true);
+    }
+
+    return ret < 0 ? ret : bdrv_co_pwritev(bs->file, offset, bytes,
+                                           qiov, flags);
+}
+
+static int coroutine_fn backup_top_co_pwrite_zeroes(BlockDriverState *bs,
+                                                    int64_t offset,
+                                                    int bytes,
+                                                    BdrvRequestFlags flags)
+{
+    int ret = 0;
+    BackupBlockJob *job = *(BackupBlockJob **)bs->opaque;
+    if (job) {
+        assert(bs == blk_bs(job->common.blk));
+        assert(QEMU_IS_ALIGNED(offset, BDRV_SECTOR_SIZE));
+        assert(QEMU_IS_ALIGNED(bytes, BDRV_SECTOR_SIZE));
+        ret = backup_do_cow(job, offset, bytes, NULL, true);
+    }
+
+    return ret < 0 ? ret : bdrv_co_pwrite_zeroes(bs->file, offset, bytes,
+                                                 flags);
+}
+
+static int coroutine_fn backup_top_co_pdiscard(BlockDriverState *bs,
+                                               int64_t offset, int bytes)
+{
+    int ret = 0;
+    BackupBlockJob *job = *(BackupBlockJob **)bs->opaque;
+    if (job) {
+        assert(bs == blk_bs(job->common.blk));
+        assert(QEMU_IS_ALIGNED(offset, BDRV_SECTOR_SIZE));
+        assert(QEMU_IS_ALIGNED(bytes, BDRV_SECTOR_SIZE));
+        ret = backup_do_cow(job, offset, bytes, NULL, true);
+    }
+
+    return ret < 0 ? ret : bdrv_co_pdiscard(bs->file->bs, offset, bytes);
+}
+
+static int backup_top_co_flush(BlockDriverState *bs)
+{
+    return bdrv_co_flush(bs->file->bs);
+}
+
+static void backup_top_close(BlockDriverState *bs)
+{
+}
+
+static int64_t backup_top_getlength(BlockDriverState *bs)
+{
+    return bs->file ? bdrv_getlength(bs->file->bs) : 0;
+}
+
+static bool backup_recurse_is_first_non_filter(BlockDriverState *bs,
+                                               BlockDriverState *candidate)
+{
+    return bdrv_recurse_is_first_non_filter(bs->file->bs, candidate);
+}
+
+static int64_t coroutine_fn backup_co_get_block_status(BlockDriverState *bs,
+                                                       int64_t sector_num,
+                                                       int nb_sectors,
+                                                       int *pnum,
+                                                       BlockDriverState **file)
+{
+    assert(bs->file && bs->file->bs);
+    *pnum = nb_sectors;
+    *file = bs->file->bs;
+    return BDRV_BLOCK_RAW | BDRV_BLOCK_OFFSET_VALID |
+           (sector_num << BDRV_SECTOR_BITS);
+}
+static BlockDriver backup_top = {
+    .format_name                        =   "backup-top",
+    .instance_size                      =   sizeof(BackupBlockJob **),
+
+    .bdrv_close                         =   backup_top_close,
+
+    .bdrv_co_flush                      =   backup_top_co_flush,
+    .bdrv_co_preadv                     =   backup_top_co_preadv,
+    .bdrv_co_pwritev                    =   backup_top_co_pwritev,
+    .bdrv_co_pwrite_zeroes              =   backup_top_co_pwrite_zeroes,
+    .bdrv_co_pdiscard                   =   backup_top_co_pdiscard,
+
+    .bdrv_getlength                     =   backup_top_getlength,
+    .bdrv_child_perm                    =   bdrv_filter_default_perms,
+    .bdrv_recurse_is_first_non_filter   =   backup_recurse_is_first_non_filter,
+    .bdrv_co_get_block_status           =   backup_co_get_block_status,
+
+    .is_filter                          =   true,
+};
+
 BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
                   BlockDriverState *target, int64_t speed,
                   MirrorSyncMode sync_mode, BdrvDirtyBitmap *sync_bitmap,
@@ -545,6 +675,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
     int64_t len;
     BlockDriverInfo bdi;
     BackupBlockJob *job = NULL;
+    BlockDriverState *filter = NULL;
     int ret;
 
     assert(bs);
@@ -606,16 +737,34 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
                          bdrv_get_device_name(bs));
         goto error;
     }
+    /* Setup before write filter */
+    filter =
+        bdrv_new_open_driver(&backup_top,
+                             NULL, bdrv_get_flags(bs), NULL, &error_abort);
+    filter->implicit = true;
+    filter->total_sectors = bs->total_sectors;
+    bdrv_set_aio_context(filter, bdrv_get_aio_context(bs));
+
+    /* Insert before write filter in the BDS chain */
+    bdrv_drained_begin(bs);
+
+    /* Ensure filter won't go away during graph modification */
+    bdrv_ref(filter);
+    bdrv_append_file(filter, bs, &error_abort);
+    bdrv_drained_end(bs);
 
     /* job->common.len is fixed, so we can't allow resize */
-    job = block_job_create(job_id, &backup_job_driver, bs,
+    job = block_job_create(job_id, &backup_job_driver, filter,
                            BLK_PERM_CONSISTENT_READ,
                            BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE |
                            BLK_PERM_WRITE_UNCHANGED | BLK_PERM_GRAPH_MOD,
                            speed, creation_flags, cb, opaque, errp);
+    bdrv_unref(filter);
     if (!job) {
         goto error;
     }
+
+    job->filter = filter;
 
     /* The target must match the source in size, so no resize here either */
     job->target = blk_new(BLK_PERM_WRITE,
@@ -675,6 +824,13 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
     if (job) {
         backup_clean(&job->common);
         block_job_early_fail(&job->common);
+    } else {
+        /* don't leak filter if job creation failed */
+        if (filter) {
+            bdrv_child_try_set_perm(filter->file, 0, BLK_PERM_ALL,
+                                    &error_abort);
+            bdrv_replace_node(filter, bs, &error_abort);
+        }
     }
 
     return NULL;
