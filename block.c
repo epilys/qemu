@@ -4945,3 +4945,13 @@ bool bdrv_can_store_new_dirty_bitmap(BlockDriverState *bs, const char *name,
 
     return drv->bdrv_can_store_new_dirty_bitmap(bs, name, granularity, errp);
 }
+
+/* Get first explicit node down a bs chain. */
+BlockDriverState *bdrv_get_first_explicit(BlockDriverState *bs)
+{
+    while (bs && bs->drv && bs->implicit) {
+        bs = child_bs(bs);
+        assert(bs);
+    }
+    return bs;
+}

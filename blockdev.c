@@ -1298,6 +1298,10 @@ SnapshotInfo *qmp_blockdev_snapshot_delete_internal_sync(const char *device,
     if (!bs) {
         return NULL;
     }
+
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
+
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
 
@@ -1506,6 +1510,9 @@ static void internal_snapshot_prepare(BlkActionState *common,
         return;
     }
 
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
+
     /* AioContext is released in .clean() */
     state->aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(state->aio_context);
@@ -1661,6 +1668,9 @@ static void external_snapshot_prepare(BlkActionState *common,
     if (!state->old_bs) {
         return;
     }
+
+    /* Skip implicit filter nodes */
+    state->old_bs = bdrv_get_first_explicit(state->old_bs);
 
     /* Acquire AioContext now so any threads operating on old_bs stop */
     state->aio_context = bdrv_get_aio_context(state->old_bs);
@@ -1842,6 +1852,9 @@ static void drive_backup_prepare(BlkActionState *common, Error **errp)
         return;
     }
 
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
+
     /* AioContext is released in .clean() */
     state->aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(state->aio_context);
@@ -1905,6 +1918,9 @@ static void blockdev_backup_prepare(BlkActionState *common, Error **errp)
     if (!bs) {
         return;
     }
+
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
 
     target = bdrv_lookup_bs(backup->target, backup->target, errp);
     if (!target) {
@@ -2986,6 +3002,9 @@ void qmp_block_stream(bool has_job_id, const char *job_id, const char *device,
         return;
     }
 
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
+
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
 
@@ -3092,6 +3111,9 @@ void qmp_block_commit(bool has_job_id, const char *job_id, const char *device,
         }
         return;
     }
+
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
 
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
@@ -3206,6 +3228,9 @@ static BlockJob *do_drive_backup(DriveBackup *backup, BlockJobTxn *txn,
     if (!bs) {
         return NULL;
     }
+
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
 
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
@@ -3482,6 +3507,9 @@ void qmp_drive_mirror(DriveMirror *arg, Error **errp)
         return;
     }
 
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
+
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
 
@@ -3636,6 +3664,9 @@ void qmp_blockdev_mirror(bool has_job_id, const char *job_id,
         return;
     }
 
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
+
     target_bs = bdrv_lookup_bs(target, target, errp);
     if (!target_bs) {
         return;
@@ -3783,6 +3814,9 @@ void qmp_change_backing_file(const char *device,
     if (!bs) {
         return;
     }
+
+    /* Skip implicit filter nodes */
+    bs = bdrv_get_first_explicit(bs);
 
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
