@@ -699,6 +699,13 @@ static inline BlockDriverState *backing_bs(BlockDriverState *bs)
     return bs->backing ? bs->backing->bs : NULL;
 }
 
+static inline BlockDriverState *child_bs(BlockDriverState *bs)
+{
+    BdrvChild *child = QLIST_FIRST(&bs->children);
+    assert(child && !QLIST_NEXT(child, next));
+    return child->bs;
+}
+
 
 /* Essential block drivers which must always be statically linked into qemu, and
  * which therefore can be accessed without using bdrv_find_format() */
@@ -979,5 +986,7 @@ void bdrv_inc_in_flight(BlockDriverState *bs);
 void bdrv_dec_in_flight(BlockDriverState *bs);
 
 void blockdev_close_all_bdrv_states(void);
+
+BlockDriverState *bdrv_get_first_explicit(BlockDriverState *bs);
 
 #endif /* BLOCK_INT_H */
