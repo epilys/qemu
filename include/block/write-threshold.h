@@ -15,7 +15,7 @@
 #include "qemu-common.h"
 
 /*
- * bdrv_write_threshold_set:
+ * bdrv_write_threshold_set_legacy:
  *
  * Set the write threshold for block devices, in bytes.
  * Notify when a write exceeds the threshold, meaning the device
@@ -24,22 +24,25 @@
  *
  * Use threshold_bytes == 0 to disable.
  */
-void bdrv_write_threshold_set(BlockDriverState *bs, uint64_t threshold_bytes);
+void bdrv_write_threshold_set_legacy(BlockDriverState *bs,
+                                     uint64_t threshold_bytes);
+
 
 /*
- * bdrv_write_threshold_get
+ * bdrv_write_threshold_get_legacy
  *
  * Get the configured write threshold, in bytes.
  * Zero means no threshold configured.
+ *
  */
-uint64_t bdrv_write_threshold_get(const BlockDriverState *bs);
+uint64_t bdrv_write_threshold_get_legacy(const BlockDriverState *bs);
 
 /*
- * bdrv_write_threshold_is_set
+ * bdrv_write_threshold_is_set_legacy
  *
  * Tell if a write threshold is set for a given BDS.
  */
-bool bdrv_write_threshold_is_set(const BlockDriverState *bs);
+bool bdrv_write_threshold_is_set_legacy(const BlockDriverState *bs);
 
 /*
  * bdrv_write_threshold_exceeded
@@ -51,11 +54,10 @@ bool bdrv_write_threshold_is_set(const BlockDriverState *bs);
  * NOTE: here we assume the following holds for each request this code
  * deals with:
  *
- * assert((req->offset + req->bytes) <= UINT64_MAX)
+ * assert((offset + bytes) <= UINT64_MAX)
  *
  * Please not there is *not* an actual C assert().
  */
-uint64_t bdrv_write_threshold_exceeded(const BlockDriverState *bs,
-                                       const BdrvTrackedRequest *req);
-
+uint64_t bdrv_write_threshold_exceeded(uint64_t threshold, uint64_t offset,
+                                       uint64_t bytes);
 #endif

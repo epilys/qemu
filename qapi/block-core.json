@@ -2232,7 +2232,8 @@
             'host_device', 'http', 'https', 'iscsi', 'luks', 'nbd', 'nfs',
             'null-aio', 'null-co', 'parallels', 'qcow', 'qcow2', 'qed',
             'quorum', 'raw', 'rbd', 'replication', 'sheepdog', 'ssh',
-            'throttle', 'vdi', 'vhdx', 'vmdk', 'vpc', 'vvfat', 'vxhs' ] }
+            'throttle', 'vdi', 'vhdx', 'vmdk', 'vpc', 'vvfat', 'vxhs',
+            'write-threshold'] }
 
 ##
 # @BlockdevOptionsFile:
@@ -3109,6 +3110,21 @@
   'data': { 'throttle-group': 'str',
             'file' : 'BlockdevRef'
              } }
+
+##
+# @BlockdevOptionsWriteThreshold:
+#
+# Driver specific block device options for the write-threshold driver
+#
+# @file:             reference to or definition of the data source block device
+# @write-threshold:  threshold in bytes
+# Since: 2.11
+##
+{ 'struct': 'BlockdevOptionsWriteThreshold',
+  'data': { '*file' : 'BlockdevRef',
+            'write-threshold' : 'int'
+             } }
+
 ##
 # @BlockdevOptions:
 #
@@ -3171,6 +3187,7 @@
       'sheepdog':   'BlockdevOptionsSheepdog',
       'ssh':        'BlockdevOptionsSsh',
       'throttle':   'BlockdevOptionsThrottle',
+      'write-threshold':   'BlockdevOptionsWriteThreshold',
       'vdi':        'BlockdevOptionsGenericFormat',
       'vhdx':       'BlockdevOptionsGenericFormat',
       'vmdk':       'BlockdevOptionsGenericCOWFormat',

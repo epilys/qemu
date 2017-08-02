@@ -122,7 +122,7 @@ BlockDeviceInfo *bdrv_block_device_info(BlockBackend *blk,
         info->group = g_strdup(throttle_group_get_name(tgm));
     }
 
-    info->write_threshold = bdrv_write_threshold_get(bs);
+    info->write_threshold = bdrv_write_threshold_get_legacy(bs);
 
     bs0 = bs;
     p_image_info = &info->image;

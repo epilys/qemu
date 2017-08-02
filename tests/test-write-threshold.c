@@ -17,9 +17,9 @@ static void test_threshold_not_set_on_init(void)
     BlockDriverState bs;
     memset(&bs, 0, sizeof(bs));
 
-    g_assert(!bdrv_write_threshold_is_set(&bs));
+    g_assert(!bdrv_write_threshold_is_set_legacy(&bs));
 
-    res = bdrv_write_threshold_get(&bs);
+    res = bdrv_write_threshold_get_legacy(&bs);
     g_assert_cmpint(res, ==, 0);
 }
 
@@ -30,11 +30,11 @@ static void test_threshold_set_get(void)
     BlockDriverState bs;
     memset(&bs, 0, sizeof(bs));
 
-    bdrv_write_threshold_set(&bs, threshold);
+    bdrv_write_threshold_set_legacy(&bs, threshold);
 
-    g_assert(bdrv_write_threshold_is_set(&bs));
+    g_assert(bdrv_write_threshold_is_set_legacy(&bs));
 
-    res = bdrv_write_threshold_get(&bs);
+    res = bdrv_write_threshold_get_legacy(&bs);
     g_assert_cmpint(res, ==, threshold);
 }
 
@@ -46,9 +46,9 @@ static void test_threshold_multi_set_get(void)
     BlockDriverState bs;
     memset(&bs, 0, sizeof(bs));
 
-    bdrv_write_threshold_set(&bs, threshold1);
-    bdrv_write_threshold_set(&bs, threshold2);
-    res = bdrv_write_threshold_get(&bs);
+    bdrv_write_threshold_set_legacy(&bs, threshold1);
+    bdrv_write_threshold_set_legacy(&bs, threshold2);
+    res = bdrv_write_threshold_get_legacy(&bs);
     g_assert_cmpint(res, ==, threshold2);
 }
 
@@ -56,16 +56,10 @@ static void test_threshold_not_trigger(void)
 {
     uint64_t amount = 0;
     uint64_t threshold = 4 * 1024 * 1024;
-    BlockDriverState bs;
-    BdrvTrackedRequest req;
+    uint64_t offset = 1024;
+    uint64_t bytes = 1024;
 
-    memset(&bs, 0, sizeof(bs));
-    memset(&req, 0, sizeof(req));
-    req.offset = 1024;
-    req.bytes = 1024;
-
-    bdrv_write_threshold_set(&bs, threshold);
-    amount = bdrv_write_threshold_exceeded(&bs, &req);
+    amount = bdrv_write_threshold_exceeded(threshold, offset, bytes);
     g_assert_cmpuint(amount, ==, 0);
 }
 
@@ -74,16 +68,10 @@ static void test_threshold_trigger(void)
 {
     uint64_t amount = 0;
     uint64_t threshold = 4 * 1024 * 1024;
-    BlockDriverState bs;
-    BdrvTrackedRequest req;
+    uint64_t offset = (4 * 1024 * 1024) - 1024;
+    uint64_t bytes = 2 * 1024;
 
-    memset(&bs, 0, sizeof(bs));
-    memset(&req, 0, sizeof(req));
-    req.offset = (4 * 1024 * 1024) - 1024;
-    req.bytes = 2 * 1024;
-
-    bdrv_write_threshold_set(&bs, threshold);
-    amount = bdrv_write_threshold_exceeded(&bs, &req);
+    amount = bdrv_write_threshold_exceeded(threshold, offset, bytes);
     g_assert_cmpuint(amount, >=, 1024);
 }
 
