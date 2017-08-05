@@ -93,7 +93,7 @@ static void test_job_ids(void)
     blk[1] = create_blk("drive1");
     blk[2] = create_blk("drive2");
 
-    /* No job ID provided and the block backend has no name */
+    /* No job ID provided */
     job[0] = do_test_id(blk[0], NULL, false);
 
     /* These are all invalid job IDs */
@@ -119,16 +119,15 @@ static void test_job_ids(void)
     block_job_early_fail(job[0]);
     job[1] = do_test_id(blk[1], "id0", true);
 
-    /* No job ID specified, defaults to the backend name ('drive1') */
     block_job_early_fail(job[1]);
-    job[1] = do_test_id(blk[1], NULL, true);
+    job[1] = do_test_id(blk[1], "drive1", true);
 
     /* Duplicate job ID */
     job[2] = do_test_id(blk[2], "drive1", false);
 
-    /* The ID of job[2] would default to 'drive2' but it is already in use */
+    /* The ID of job[2] is already in use */
     job[0] = do_test_id(blk[0], "drive2", true);
-    job[2] = do_test_id(blk[2], NULL, false);
+    job[2] = do_test_id(blk[2], "drive2", false);
 
     /* This one is valid */
     job[2] = do_test_id(blk[2], "id_2", true);

@@ -3002,6 +3002,16 @@ void qmp_block_stream(bool has_job_id, const char *job_id, const char *device,
         return;
     }
 
+    /* Always require a job-id when device is a node name */
+    if (!has_job_id) {
+        if (blk_by_name(device)) {
+            job_id = device;
+        } else {
+            error_setg(errp, "An explicit job ID is required for this node");
+            return;
+        }
+    }
+
     /* Skip implicit filter nodes */
     bs = bdrv_get_first_explicit(bs);
 
@@ -3056,7 +3066,7 @@ void qmp_block_stream(bool has_job_id, const char *job_id, const char *device,
     /* backing_file string overrides base bs filename */
     base_name = has_backing_file ? backing_file : base_name;
 
-    stream_start(has_job_id ? job_id : NULL, bs, base_bs, base_name,
+    stream_start(job_id, bs, base_bs, base_name,
                  has_speed ? speed : 0, on_error, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
@@ -3115,6 +3125,16 @@ void qmp_block_commit(bool has_job_id, const char *job_id, const char *device,
     /* Skip implicit filter nodes */
     bs = bdrv_get_first_explicit(bs);
 
+    /* Always require a job-id when device is a node name */
+    if (!has_job_id) {
+        if (blk_by_name(device)) {
+            job_id = device;
+        } else {
+            error_setg(errp, "An explicit job ID is required for this node");
+            return;
+        }
+    }
+
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
 
@@ -3169,7 +3189,7 @@ void qmp_block_commit(bool has_job_id, const char *job_id, const char *device,
                              " but 'top' is the active layer");
             goto out;
         }
-        commit_active_start(has_job_id ? job_id : NULL, bs, base_bs,
+        commit_active_start(job_id, bs, base_bs,
                             BLOCK_JOB_DEFAULT, speed, on_error,
                             filter_node_name, NULL, NULL, false, &local_err);
     } else {
@@ -3177,7 +3197,7 @@ void qmp_block_commit(bool has_job_id, const char *job_id, const char *device,
         if (bdrv_op_is_blocked(overlay_bs, BLOCK_OP_TYPE_COMMIT_TARGET, errp)) {
             goto out;
         }
-        commit_start(has_job_id ? job_id : NULL, bs, base_bs, top_bs, speed,
+        commit_start(job_id, bs, base_bs, top_bs, speed,
                      on_error, has_backing_file ? backing_file : NULL,
                      filter_node_name, &local_err);
     }
@@ -3218,7 +3238,13 @@ static BlockJob *do_drive_backup(DriveBackup *backup, BlockJobTxn *txn,
         backup->mode = NEW_IMAGE_MODE_ABSOLUTE_PATHS;
     }
     if (!backup->has_job_id) {
-        backup->job_id = NULL;
+        /* Always require a job-id when device is a node name */
+        if (blk_by_name(backup->device)) {
+            backup->job_id = backup->device;
+        } else {
+            error_setg(errp, "An explicit job ID is required for this node");
+            return NULL;
+        }
     }
     if (!backup->has_compress) {
         backup->compress = false;
@@ -3364,7 +3390,13 @@ BlockJob *do_blockdev_backup(BlockdevBackup *backup, BlockJobTxn *txn,
         backup->on_target_error = BLOCKDEV_ON_ERROR_REPORT;
     }
     if (!backup->has_job_id) {
-        backup->job_id = NULL;
+        /* Always require a job-id when device is a node name */
+        if (blk_by_name(backup->device)) {
+            backup->job_id = backup->device;
+        } else {
+            error_setg(errp, "An explicit job ID is required for this node");
+            return NULL;
+        }
     }
     if (!backup->has_compress) {
         backup->compress = false;
@@ -3507,6 +3539,16 @@ void qmp_drive_mirror(DriveMirror *arg, Error **errp)
         return;
     }
 
+    /* Always require a job-id when device is a node name */
+    if (!arg->has_job_id) {
+        if (blk_by_name(arg->device)) {
+            arg->job_id = arg->device;
+        } else {
+            error_setg(errp, "An explicit job ID is required for this node");
+            return;
+        }
+    }
+
     /* Skip implicit filter nodes */
     bs = bdrv_get_first_explicit(bs);
 
@@ -3622,7 +3664,7 @@ void qmp_drive_mirror(DriveMirror *arg, Error **errp)
 
     bdrv_set_aio_context(target_bs, aio_context);
 
-    blockdev_mirror_common(arg->has_job_id ? arg->job_id : NULL, bs, target_bs,
+    blockdev_mirror_common(arg->job_id, bs, target_bs,
                            arg->has_replaces, arg->replaces, arg->sync,
                            backing_mode, arg->has_speed, arg->speed,
                            arg->has_granularity, arg->granularity,
@@ -3672,12 +3714,21 @@ void qmp_blockdev_mirror(bool has_job_id, const char *job_id,
         return;
     }
 
+    /* Always require a job-id when device is a node name */
+    if (!has_job_id) {
+        if (blk_by_name(device)) {
+            job_id = device;
+        } else {
+            error_setg(errp, "An explicit job ID is required for this node");
+            return;
+        }
+    }
     aio_context = bdrv_get_aio_context(bs);
     aio_context_acquire(aio_context);
 
     bdrv_set_aio_context(target_bs, aio_context);
 
-    blockdev_mirror_common(has_job_id ? job_id : NULL, bs, target_bs,
+    blockdev_mirror_common(job_id, bs, target_bs,
                            has_replaces, replaces, sync, backing_mode,
                            has_speed, speed,
                            has_granularity, granularity,
