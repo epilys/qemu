@@ -112,8 +112,7 @@ struct BlockJobDriver {
 
 /**
  * block_job_create:
- * @job_id: The id of the newly-created job, or %NULL to have one
- * generated automatically.
+ * @job_id: The id of the newly-created job, must be non %NULL.
  * @job_type: The class object for the newly-created job.
  * @bs: The block
  * @perm, @shared_perm: Permissions to request for @bs

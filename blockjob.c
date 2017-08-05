@@ -622,20 +622,14 @@ void *block_job_create(const char *job_id, const BlockJobDriver *driver,
         return NULL;
     }
 
-    if (job_id == NULL && !(flags & BLOCK_JOB_INTERNAL)) {
-        job_id = bdrv_get_device_name(bs);
-        if (!*job_id) {
-            error_setg(errp, "An explicit job ID is required for this node");
-            return NULL;
-        }
-    }
-
-    if (job_id) {
-        if (flags & BLOCK_JOB_INTERNAL) {
+    if (flags & BLOCK_JOB_INTERNAL) {
+        if (job_id) {
             error_setg(errp, "Cannot specify job ID for internal block job");
             return NULL;
         }
-
+    } else {
+        /* Require job-id. */
+        assert(job_id);
         if (!id_wellformed(job_id)) {
             error_setg(errp, "Invalid job ID '%s'", job_id);
             return NULL;
