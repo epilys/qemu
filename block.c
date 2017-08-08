@@ -930,6 +930,9 @@ static void bdrv_backing_attach(BdrvChild *c)
                     parent->backing_blocker);
     bdrv_op_unblock(backing_hd, BLOCK_OP_TYPE_STREAM,
                     parent->backing_blocker);
+    /* Unblock filter node insertion */
+    bdrv_op_unblock(backing_hd, BLOCK_OP_TYPE_EDGE_MODIFICATION,
+                    parent->backing_blocker);
     /*
      * We do backup in 3 ways:
      * 1. drive backup
@@ -5033,4 +5036,193 @@ BlockDriverState *bdrv_get_first_explicit(BlockDriverState *bs)
         assert(bs);
     }
     return bs;
+}
+
+
+static inline BdrvChild *bdrv_find_child(BlockDriverState *parent_bs,
+                                  const char *child_name)
+{
+    BdrvChild *child;
+    assert(child_name);
+
+    QLIST_FOREACH(child, &parent_bs->children, next) {
+        if (child->bs && !g_strcmp0(child->bs->node_name, child_name)) {
+            return child;
+        }
+    }
+
+    return NULL;
+}
+
+static int check_node_edge(const char *parent, const char *child, Error **errp)
+{
+    BlockDriverState *parent_bs, *child_bs;
+    parent_bs = bdrv_find_node(parent);
+    if (!parent_bs) {
+        error_setg(errp, "'%s' not a node name", parent);
+        return 1;
+    }
+    child_bs = bdrv_find_node(child);
+    if (!child_bs) {
+        error_setg(errp, "'%s' not a node name", child);
+        return 1;
+    }
+    if (!bdrv_find_child(parent_bs, child)) {
+        error_setg(errp, "'%s' not a child of '%s'", child, parent);
+        return 1;
+    }
+    if (bdrv_op_is_blocked(parent_bs, BLOCK_OP_TYPE_EDGE_MODIFICATION, errp) ||
+        bdrv_op_is_blocked(child_bs, BLOCK_OP_TYPE_EDGE_MODIFICATION, errp)) {
+        return 1;
+    }
+    return 0;
+}
+
+void bdrv_insert_node(const char *parent, const char *child,
+                      const char *node, Error **errp)
+{
+    BlockBackend *blk;
+    BlockDriverState *parent_bs, *node_bs, *child_bs;
+    BdrvChild *c;
+    const BdrvChildRole *role;
+
+    if (check_node_edge(node, child, errp)) {
+        return;
+    }
+    node_bs = bdrv_find_node(node);
+    child_bs = bdrv_find_node(child);
+    blk = blk_by_name(parent);
+    if (blk) {
+        /* insert 'node' as root bs of 'parent' device */
+        if (!blk_bs(blk)) {
+            error_setg(errp, "Device '%s' has no medium", parent);
+            return;
+        }
+        if (blk_bs(blk) != child_bs) {
+            error_setg(errp, "'%s' not a child of device '%s'", child, parent);
+            return;
+        }
+        bdrv_drained_begin(child_bs);
+        blk_remove_bs(blk);
+        blk_insert_bs(blk, node_bs, errp);
+        if (!blk_bs(blk)) {
+            blk_insert_bs(blk, child_bs, &error_abort);
+        }
+        bdrv_drained_end(child_bs);
+        return;
+    }
+
+    /* insert 'node' as child bs of 'parent' node */
+    if (check_node_edge(parent, child, errp)) {
+        return;
+    }
+    parent_bs = bdrv_find_node(parent);
+    c = bdrv_find_child(parent_bs, child);
+    role = c->role;
+    assert(role == &child_file || role == &child_backing);
+
+    bdrv_ref(node_bs);
+
+    bdrv_drained_begin(parent_bs);
+    bdrv_unref_child(parent_bs, c);
+    if (role == &child_file) {
+        parent_bs->file = bdrv_attach_child(parent_bs, node_bs, "file",
+                                            &child_file, errp);
+        if (!parent_bs->file) {
+            parent_bs->file = bdrv_attach_child(parent_bs, child_bs, "file",
+                                                &child_file, &error_abort);
+            goto out;
+        }
+    } else if (role == &child_backing) {
+        parent_bs->backing = bdrv_attach_child(parent_bs, node_bs, "backing",
+                                               &child_backing, errp);
+        if (!parent_bs->backing) {
+            parent_bs->backing = bdrv_attach_child(parent_bs, child_bs,
+                                                   "backing", &child_backing,
+                                                   &error_abort);
+            goto out;
+        }
+    }
+    bdrv_refresh_filename(parent_bs);
+    bdrv_refresh_limits(parent_bs, NULL);
+
+out:
+    bdrv_drained_end(parent_bs);
+}
+
+void bdrv_remove_node(const char *parent, const char *child,
+                      const char *node, Error **errp)
+{
+    BlockBackend *blk;
+    BlockDriverState *node_bs, *parent_bs, *child_bs;
+    BdrvChild *c;
+    const BdrvChildRole *role;
+
+    if (check_node_edge(node, child, errp)) {
+        return;
+    }
+    node_bs = bdrv_find_node(node);
+    child_bs = bdrv_find_node(child);
+    blk = blk_by_name(parent);
+    if (blk) {
+        /* remove 'node' as root bs of 'parent' device */
+        if (!blk_bs(blk)) {
+            error_setg(errp, "Device '%s' has no medium", parent);
+            return;
+        }
+        if (blk_bs(blk) != node_bs) {
+            error_setg(errp, "'%s' not a child of device '%s'", node, parent);
+            return;
+        }
+        bdrv_drained_begin(node_bs);
+        blk_remove_bs(blk);
+        blk_insert_bs(blk, child_bs, errp);
+        if (!blk_bs(blk)) {
+            blk_insert_bs(blk, node_bs, &error_abort);
+        }
+        bdrv_drained_end(node_bs);
+        return;
+    }
+
+    if (check_node_edge(parent, node, errp)) {
+        return;
+    }
+    parent_bs = bdrv_find_node(parent);
+    c = bdrv_find_child(node_bs, child);
+    role = c->role;
+    assert(role == &child_file || role == &child_backing);
+
+
+    bdrv_ref(child_bs);
+    bdrv_ref(node_bs);
+
+    bdrv_drained_begin(parent_bs);
+    bdrv_unref_child(parent_bs, bdrv_find_child(parent_bs, node));
+    if (role == &child_file) {
+        parent_bs->file = bdrv_attach_child(parent_bs, child_bs, "file",
+                &child_file, errp);
+        if (!parent_bs->file) {
+            parent_bs->file = bdrv_attach_child(parent_bs, node_bs, "file",
+                                                &child_file, &error_abort);
+            node_bs->file = bdrv_attach_child(node_bs, child_bs, "file",
+                                              &child_file, &error_abort);
+            goto out;
+        }
+    } else if (role == &child_backing) {
+        parent_bs->backing = bdrv_attach_child(parent_bs, child_bs, "backing",
+                                               &child_backing, errp);
+        if (!parent_bs->backing) {
+            parent_bs->backing = bdrv_attach_child(parent_bs, node_bs,
+                                                   "backing", &child_backing,
+                                                   &error_abort);
+            node_bs->backing = bdrv_attach_child(node_bs, child_bs, "backing",
+                                                 &child_backing, &error_abort);
+            goto out;
+        }
+    }
+    bdrv_refresh_filename(parent_bs);
+    bdrv_refresh_limits(parent_bs, NULL);
+    bdrv_unref(node_bs);
+out:
+    bdrv_drained_end(parent_bs);
 }

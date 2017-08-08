@@ -1,0 +1,241 @@
+#!/bin/bash
+#
+# Test block-insert-node & block-remove-node commands
+#
+# Copyright (C) 2017 Manos Pitsidianakis
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# creator
+owner="Manos Pitsidianakis"
+
+seq=`basename $0`
+echo "QA output created by $seq"
+
+here=`pwd`
+status=1	# failure is the default!
+
+_cleanup()
+{
+    _cleanup_test_img
+    rm -rf "$TEST_IMG".s
+    rm -rf "$TEST_IMG".e
+
+}
+trap "_cleanup; exit \$status" 0 1 2 3 15
+
+# get standard environment, filters and checks
+. ./common.rc
+. ./common.filter
+
+_supported_fmt qcow2
+_supported_proto file
+_supported_os Linux
+
+function do_run_qemu()
+{
+    echo Testing: "$@" | _filter_imgfmt
+    $QEMU -nographic -qmp-pretty stdio -serial none "$@"
+    echo
+}
+
+function run_qemu()
+{
+    do_run_qemu "$@" 2>&1 | _filter_testdir | _filter_qemu | _filter_qmp\
+                          | _filter_qemu_io | _filter_generated_node_ids
+}
+
+_make_test_img 64M
+test_throttle=$($QEMU_IMG --help|grep throttle)
+[ "$test_throttle" = "" ] && _supported_fmt throttle
+
+echo
+echo "== inserting node =="
+
+run_qemu <<EOF
+{ "execute": "qmp_capabilities" }
+
+{ "execute": "blockdev-add",
+  "arguments": {
+    "node-name": "disk",
+    "driver": "$IMGFMT",
+    "file": {
+      "driver": "file",
+      "filename": "$TEST_IMG"
+    }
+  }
+}
+{ "execute": "device_add",
+   "arguments": { "driver": "virtio-blk", "drive": "disk",
+                  "id": "virtio0" } }
+{
+    "execute": "blockdev-snapshot-sync",
+    "arguments": {
+        "node-name": "disk",
+        "snapshot-file": "$TEST_IMG.s",
+        "format": "$IMGFMT",
+        "snapshot-node-name": "node-B"
+    }
+}
+{ "execute": "blockdev-add",
+  "arguments": {
+    "node-name": "throttle0",
+    "driver": "throttle",
+    "file": "disk"  }
+}
+
+{ "execute": "block-insert-node",
+    "arguments": {
+    "parent": "node-B",
+    "child": "disk",
+    "node": "throttle0" }
+}
+{ "execute": "query-block" }
+{ "execute": "query-named-block-nodes" }
+{ "execute": "quit" }
+EOF
+
+echo
+echo "== inserting and removing node =="
+
+run_qemu <<EOF
+{ "execute": "qmp_capabilities" }
+
+{ "execute": "blockdev-add",
+  "arguments": {
+    "node-name": "disk",
+    "driver": "$IMGFMT",
+    "file": {
+      "driver": "file",
+      "filename": "$TEST_IMG"
+    }
+  }
+}
+{"execute": "blockdev-add",
+"arguments": {
+"node-name": "throttle0", "driver": "throttle", "file": "disk", "throttle-group": "foo", "limits" : { "iops-total": 100 } } }
+{ "execute": "device_add",
+   "arguments": { "driver": "virtio-blk", "drive": "throttle0",
+                  "id": "virtio0" } }
+{"execute": "blockdev-add",
+"arguments": {
+"node-name": "throttle1", "driver": "throttle", "file": "disk", "throttle-group": "bar", "limits" : { "iops-total": 200 } } }
+{"execute": "block-insert-node",
+	"arguments": {
+	"parent": "throttle0",
+	"child": "disk",
+	"node": "throttle1"}
+}
+{ "execute": "query-block" }
+{ "execute": "query-named-block-nodes" }
+{"execute": "block-remove-node",
+	"arguments": {
+	"parent": "throttle0",
+	"child": "disk",
+	"node": "throttle1"}
+}
+{"execute": "blockdev-del",
+    "arguments": { "node-name": "throttle1" }
+}
+{ "execute": "query-block" }
+{ "execute": "query-named-block-nodes" }
+{ "execute": "quit" }
+EOF
+
+echo
+echo "== inserting node below BB =="
+
+run_qemu -drive file=$TEST_IMG,format=$IMGFMT,if=none,id=disk,node-name=disk0 <<EOF
+{ "execute": "qmp_capabilities" }
+{ "execute": "blockdev-add",
+  "arguments": {
+    "node-name": "throttle0",
+    "driver": "throttle",
+    "file": "disk0"  }
+}
+{ "execute": "block-insert-node",
+    "arguments": {
+    "parent": "disk",
+    "child": "disk0",
+    "node": "throttle0" }
+}
+{ "execute": "query-block" }
+{ "execute": "query-named-block-nodes" }
+{"execute": "block-remove-node",
+	"arguments": {
+	"parent": "disk",
+	"child": "disk0",
+	"node": "throttle0"}
+}
+{"execute": "blockdev-del",
+    "arguments": { "node-name": "throttle0" }
+}
+{ "execute": "query-block" }
+{ "execute": "query-named-block-nodes" }
+{ "execute": "quit" }
+EOF
+
+echo
+echo "== try insert with active block job =="
+
+# this should error because of the hidden mirror filter on top
+run_qemu -drive file=$TEST_IMG,format=$IMGFMT,if=none,id=disk,node-name=disk0 <<EOF
+{ "execute": "qmp_capabilities" }
+{
+    "execute": "blockdev-snapshot-sync",
+    "arguments": {
+        "node-name": "disk0",
+        "snapshot-file": "$TEST_IMG.s",
+        "format": "$IMGFMT",
+        "snapshot-node-name": "overlay0"
+    }
+}
+{
+    "execute": "drive-mirror",
+    "arguments": {
+        "device": "overlay0",
+        "job-id": "job0",
+        "target": "$TEST_IMG.e",
+        "sync": "full"
+    }
+}
+{
+    "execute": "query-block-jobs",
+    "arguments": {}
+}
+{ "execute": "blockdev-add",
+  "arguments": {
+    "node-name": "throttle0",
+    "driver": "throttle",
+    "file": "overlay0"  }
+}
+{ "execute": "block-insert-node",
+    "arguments": {
+    "parent": "disk",
+    "child": "overlay0",
+    "node": "throttle0" }
+}
+{ "execute": "query-block" }
+{"execute": "blockdev-del",
+    "arguments": { "node-name": "throttle0" }
+}
+{ "execute": "quit" }
+EOF
+
+echo
+# success, all done
+echo "*** done"
+rm -f $seq.full
+status=0

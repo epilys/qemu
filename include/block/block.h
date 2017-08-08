@@ -191,6 +191,8 @@ typedef enum BlockOpType {
     BLOCK_OP_TYPE_RESIZE,
     BLOCK_OP_TYPE_STREAM,
     BLOCK_OP_TYPE_REPLACE,
+    BLOCK_OP_TYPE_EDGE_MODIFICATION, /* block user modification of graph edges
+                                        including this node */
     BLOCK_OP_TYPE_MAX,
 } BlockOpType;
 
@@ -627,4 +629,8 @@ void bdrv_del_child(BlockDriverState *parent, BdrvChild *child, Error **errp);
 bool bdrv_can_store_new_dirty_bitmap(BlockDriverState *bs, const char *name,
                                      uint32_t granularity, Error **errp);
 
+void bdrv_insert_node(const char *parent, const char *child,
+                      const char *node, Error **errp);
+void bdrv_remove_node(const char *parent, const char *child,
+                      const char *node, Error **errp);
 #endif

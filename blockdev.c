@@ -4232,3 +4232,47 @@ QemuOptsList qemu_drive_opts = {
         { /* end of list */ }
     },
 };
+
+void qmp_block_insert_node(const char *parent, const char *child,
+                           const char *node, Error **errp)
+{
+    BlockDriverState *bs = bdrv_find_node(node);
+    if (!bs) {
+        error_setg(errp, "Node '%s' not found", node);
+        return;
+    }
+    if (!bs->monitor_list.tqe_prev) {
+        error_setg(errp, "Node '%s' is not owned by the monitor",
+                   bs->node_name);
+        return;
+    }
+    if (!bs->drv->is_filter) {
+        error_setg(errp, "Block format '%s' used by node '%s' does not support"
+                   "insertion", bs->drv->format_name, bs->node_name);
+        return;
+    }
+
+    bdrv_insert_node(parent, child, node, errp);
+}
+
+void qmp_block_remove_node(const char *parent, const char *child,
+                           const char *node, Error **errp)
+{
+    BlockDriverState *bs = bdrv_find_node(node);
+    if (!bs) {
+        error_setg(errp, "Node '%s' not found", node);
+        return;
+    }
+    if (!bs->monitor_list.tqe_prev) {
+        error_setg(errp, "Node %s is not owned by the monitor",
+                   bs->node_name);
+        return;
+    }
+    if (!bs->drv->is_filter) {
+        error_setg(errp, "Block format '%s' used by node '%s' does not support"
+                   "removal", bs->drv->format_name, bs->node_name);
+        return;
+    }
+
+    bdrv_remove_node(parent, child, node, errp);
+}

@@ -3943,3 +3943,75 @@
   'data' : { 'parent': 'str',
              '*child': 'str',
              '*node': 'str' } }
+
+##
+# @block-insert-node:
+#
+# Insert a filter node between a specific edge in the block driver
+# state graph. The user defines a (parent, child) edge and a node to be
+# inserted between the two vertices. A successful operation results in
+# (parent, node) and (node, child) edges. Note that @child also has to
+# be a child of @node.
+#
+# @parent:  the name of the parent. It can be a node or device name.
+# @child:   the name of the child of both node and parent. This can
+#           necessarily only be a node.
+# @node:    the name of the node to insert under parent.
+#
+# Since 2.11
+#
+# Example:
+# Insert and remove a throttle filter on top of a device chain, between the
+# device 'ide0-hd0' and node 'node-A'
+#
+# -> {'execute': 'object-add',
+#     "arguments": {
+#       "qom-type": "throttle-group",
+#       "id": "group0",
+#       "props" : { "limits": { "iops-total": 300 } }
+#     }
+#    }
+# <- { 'return': {} }
+# -> {'execute': 'blockdev-add',
+#       'arguments': {
+#           'driver': 'throttle',
+#           'node-name': 'throttle0',
+#           'throttle-group': 'group0',
+#           'file': 'node-A'
+#       }
+#    }
+# <- { 'return': {} }
+# -> { 'execute': 'block-insert-node',
+#       'arguments': { 'parent': 'ide0-hd0', 'child': 'node-A', 'node': 'throttle0' }
+#    }
+# <- { 'return': {} }
+# -> { 'execute': 'block-remove-node',
+#       'arguments': { 'parent': 'ide0-hd0', 'child': 'node-A', 'node': 'throttle0' }
+#    }
+# <- { 'return': {} }
+# -> { 'execute': 'blockdev-del',
+#       'arguments': { 'node-name': 'throttle0' }
+#    }
+# <- { 'return': {} }
+#
+##
+{ 'command': 'block-insert-node',
+  'data': { 'parent': 'str',
+             'child': 'str',
+             'node': 'str'} }
+##
+# @block-remove-node:
+#
+# Remove a filter node between two other nodes in the block driver
+# state graph. This is the reverse of a @block-insert-node action.
+#
+# @parent:  the name of the parent node or device
+# @node:    the name of the node to remove from parent
+# @child:   the name of the child of node which will go under parent
+#
+# Since 2.11
+##
+{ 'command': 'block-remove-node',
+  'data': { 'parent': 'str',
+             'child': 'str',
+             'node': 'str'} }
