@@ -2088,6 +2088,38 @@ static void bdrv_parent_cb_resize(BlockDriverState *bs)
 }
 
 /*
+ * Sets the file link of a BDS. A new reference is created; callers
+ * which don't need their own reference any more must call bdrv_unref().
+ */
+void bdrv_set_file(BlockDriverState *bs, BlockDriverState *file_bs,
+                   Error **errp)
+{
+    if (file_bs) {
+        bdrv_ref(file_bs);
+    }
+
+    if (bs->file) {
+        bdrv_unref_child(bs, bs->file);
+    }
+
+    if (!file_bs) {
+        bs->file = NULL;
+        goto out;
+    }
+
+    bs->file = bdrv_attach_child(bs, file_bs, "file", &child_file,
+                                 errp);
+    if (!bs->file) {
+        bdrv_unref(file_bs);
+    }
+
+    bdrv_refresh_filename(bs);
+
+out:
+    bdrv_refresh_limits(bs, NULL);
+}
+
+/*
  * Sets the backing file link of a BDS. A new reference is created; callers
  * which don't need their own reference any more must call bdrv_unref().
  */
@@ -3142,7 +3174,7 @@ static bool should_update_child(BdrvChild *c, BlockDriverState *to)
         return false;
     }
 
-    if (c->role == &child_backing) {
+    if (c->role == &child_backing || c->role == &child_file) {
         /* If @from is a backing file of @to, ignore the child to avoid
          * creating a loop. We only want to change the pointer of other
          * parents. */
@@ -3210,6 +3242,43 @@ void bdrv_replace_node(BlockDriverState *from, BlockDriverState *to,
 out:
     g_slist_free(list);
     bdrv_unref(from);
+}
+
+/*
+ * Add new bs node at the top of a BDS chain while the chain is
+ * live, while keeping required fields on the top layer.
+ *
+ * This will modify the BlockDriverState fields, and swap contents
+ * between bs_new and bs_top. Both bs_new and bs_top are modified.
+ *
+ * bs_new must not be attached to a BlockBackend.
+ *
+ * bdrv_append_file() takes ownership of a bs_new reference and unrefs it
+ * because that's what the callers commonly need. bs_new will be referenced by
+ * the old parents of bs_top after bdrv_append_file() returns. If the caller
+ * needs to keep a reference of its own, it must call bdrv_ref().
+ */
+void bdrv_append_file(BlockDriverState *bs_new, BlockDriverState *bs_top,
+                      Error **errp)
+{
+    Error *local_err = NULL;
+
+    bdrv_set_file(bs_new, bs_top, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        goto out;
+    }
+    bdrv_replace_node(bs_top, bs_new, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        bdrv_set_file(bs_new, NULL, &error_abort);
+        goto out;
+    }
+
+    /* bs_new is now referenced by its new parents, we don't need the
+     * additional reference any more. */
+out:
+    bdrv_unref(bs_new);
 }
 
 /*
