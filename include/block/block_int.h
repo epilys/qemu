@@ -533,9 +533,9 @@ struct BdrvChild {
 };
 
 /*
- * Note: the function bdrv_append() copies and swaps contents of
+ * Note: the functions bdrv_append_*() copies and swaps contents of
  * BlockDriverStates, so if you add new fields to this struct, please
- * inspect bdrv_append() to determine if the new fields need to be
+ * inspect bdrv_append_*() to determine if the new fields need to be
  * copied as well.
  */
 struct BlockDriverState {

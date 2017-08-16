@@ -244,10 +244,10 @@ int bdrv_create(BlockDriver *drv, const char* filename,
                 QemuOpts *opts, Error **errp);
 int bdrv_create_file(const char *filename, QemuOpts *opts, Error **errp);
 BlockDriverState *bdrv_new(void);
-void bdrv_append(BlockDriverState *bs_new, BlockDriverState *bs_top,
-                 Error **errp);
 void bdrv_append_file(BlockDriverState *bs_new, BlockDriverState *bs_top,
                       Error **errp);
+void bdrv_append_backing(BlockDriverState *bs_new, BlockDriverState *bs_top,
+                         Error **errp);
 void bdrv_replace_node(BlockDriverState *from, BlockDriverState *to,
                        Error **errp);
 

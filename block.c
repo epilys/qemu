@@ -2387,12 +2387,12 @@ static BlockDriverState *bdrv_append_temp_snapshot(BlockDriverState *bs,
         goto out;
     }
 
-    /* bdrv_append() consumes a strong reference to bs_snapshot
+    /* bdrv_append_backing() consumes a strong reference to bs_snapshot
      * (i.e. it will call bdrv_unref() on it) even on error, so in
      * order to be able to return one, we have to increase
      * bs_snapshot's refcount here */
     bdrv_ref(bs_snapshot);
-    bdrv_append(bs_snapshot, bs, &local_err);
+    bdrv_append_backing(bs_snapshot, bs, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         bs_snapshot = NULL;
@@ -3292,13 +3292,13 @@ out:
  *
  * This function does not create any image files.
  *
- * bdrv_append() takes ownership of a bs_new reference and unrefs it because
- * that's what the callers commonly need. bs_new will be referenced by the old
- * parents of bs_top after bdrv_append() returns. If the caller needs to keep a
- * reference of its own, it must call bdrv_ref().
+ * bdrv_append_backing() takes ownership of a bs_new reference and unrefs it
+ * because that's what the callers commonly need. bs_new will be referenced by
+ * the old parents of bs_top after bdrv_append_backing() returns. If the caller
+ * needs to keep a reference of its own, it must call bdrv_ref().
  */
-void bdrv_append(BlockDriverState *bs_new, BlockDriverState *bs_top,
-                 Error **errp)
+void bdrv_append_backing(BlockDriverState *bs_new, BlockDriverState *bs_top,
+                         Error **errp)
 {
     Error *local_err = NULL;
 
