@@ -33,8 +33,10 @@
 #include "qapi-visit.h"
 #include "qom/object.h"
 #include "qom/object_interfaces.h"
+#include "qapi/qobject-input-visitor.h"
 
 static void throttle_group_obj_init(Object *obj);
+static bool throttle_group_can_be_deleted(UserCreatable *uc, Error **errp);
 static void throttle_group_obj_complete(UserCreatable *obj, Error **errp);
 
 /* The ThrottleGroup structure (with its ThrottleState) is shared
@@ -66,6 +68,7 @@ typedef struct ThrottleGroup {
 
     /* refuse individual property change if initialization is complete */
     bool is_initialized;
+    bool legacy;
     char *name; /* This is constant during the lifetime of the group */
 
     QemuMutex lock; /* This lock protects the following four fields */
@@ -74,34 +77,47 @@ typedef struct ThrottleGroup {
     ThrottleGroupMember *tokens[2];
     bool any_timer_armed[2];
     QEMUClockType clock_type;
-
-    /* This field is protected by the global QEMU mutex */
-    QTAILQ_ENTRY(ThrottleGroup) list;
 } ThrottleGroup;
 
-/* This is protected by the global QEMU mutex */
-static QTAILQ_HEAD(, ThrottleGroup) throttle_groups =
-    QTAILQ_HEAD_INITIALIZER(throttle_groups);
+
+struct ThrottleGroupQuery {
+    const char *name;
+    ThrottleGroup *result;
+};
+
+static int query_throttle_groups_foreach(Object *obj, void *data)
+{
+    ThrottleGroup *tg;
+    struct ThrottleGroupQuery *query = data;
+
+    tg = (ThrottleGroup *)object_dynamic_cast(obj, TYPE_THROTTLE_GROUP);
+    if (!tg) {
+        return 0;
+    }
+
+    if (!g_strcmp0(query->name, tg->name)) {
+        query->result = tg;
+        return 1;
+    }
+
+    return 0;
+}
 
 
-/* This function reads throttle_groups and must be called under the global
- * mutex.
+/* This function reads the QOM root container and must be called under the
+ * global mutex.
  */
 static ThrottleGroup *throttle_group_by_name(const char *name)
 {
-    ThrottleGroup *iter;
+    struct ThrottleGroupQuery query = { name = name };
 
     /* Look for an existing group with that name */
-    QTAILQ_FOREACH(iter, &throttle_groups, list) {
-        if (!g_strcmp0(name, iter->name)) {
-            return iter;
-        }
-    }
-
-    return NULL;
+    object_child_foreach(object_get_objects_root(),
+                         query_throttle_groups_foreach, &query);
+    return query.result;
 }
 
-/* This function reads throttle_groups and must be called under the global
+/* This function must be called under the global
  * mutex.
  */
 bool throttle_group_exists(const char *name)
@@ -109,34 +125,49 @@ bool throttle_group_exists(const char *name)
     return throttle_group_by_name(name) != NULL;
 }
 
+/*
+ * Create a new ThrottleGroup, insert it in the object root container so that
+ * we can refer to it by id and set tg->legacy to true
+ *
+ * This function edits the QOM root container and must be called under the
+ * global mutex.
+ *
+ * @name: the name of the ThrottleGroup.
+ * @errp: Error object. Will be set if @name collides with a non-ThrottleGroup
+ *        QOM object
+ */
+void throttle_group_new_legacy(const char *name, Error **errp)
+{
+    ThrottleGroup *tg = NULL;
+
+    /* Create an empty property qdict. Caller is responsible for
+     * setting up limits */
+    QDict *pdict = qdict_new();
+    Visitor *v = qobject_input_visitor_new(QOBJECT(pdict));
+
+    /* tg will have a ref count of 2, one for the object root container
+     * and one for the caller */
+    tg = THROTTLE_GROUP(user_creatable_add_type(TYPE_THROTTLE_GROUP,
+                name, pdict, v, errp));
+    visit_free(v);
+    QDECREF(pdict);
+    if (!tg) {
+        return;
+    }
+    tg->legacy = true;
+}
+
 /* Increments the reference count of a ThrottleGroup given its name.
- *
- * If no ThrottleGroup is found with the given name a new one is
- * created.
- *
- * This function edits throttle_groups and must be called under the global
- * mutex.
  *
  * @name: the name of the ThrottleGroup
  * @ret:  the ThrottleState member of the ThrottleGroup
  */
 ThrottleState *throttle_group_incref(const char *name)
 {
-    ThrottleGroup *tg = NULL;
+    ThrottleGroup *tg = throttle_group_by_name(name);
 
-    /* Look for an existing group with that name */
-    tg = throttle_group_by_name(name);
-
-    if (tg) {
-        object_ref(OBJECT(tg));
-    } else {
-        /* Create a new one if not found */
-        /* new ThrottleGroup obj will have a refcnt = 1 */
-        tg = THROTTLE_GROUP(object_new(TYPE_THROTTLE_GROUP));
-        tg->name = g_strdup(name);
-        throttle_group_obj_complete(USER_CREATABLE(tg), &error_abort);
-    }
-
+    assert(tg);
+    object_ref(OBJECT(tg));
     return &tg->ts;
 }
 
@@ -145,8 +176,8 @@ ThrottleState *throttle_group_incref(const char *name)
  * When the reference count reaches zero the ThrottleGroup is
  * destroyed.
  *
- * This function edits throttle_groups and must be called under the global
- * mutex.
+ * This function edits the QOM root container and must be called under the
+ * global mutex.
  *
  * @ts:  The ThrottleGroup to unref, given by its ThrottleState member
  */
@@ -154,6 +185,13 @@ void throttle_group_unref(ThrottleState *ts)
 {
     ThrottleGroup *tg = container_of(ts, ThrottleGroup, ts);
     object_unref(OBJECT(tg));
+    /* ThrottleGroups will always have an extra reference from their container,
+     * so accessing it now is safe */
+    if (tg->legacy && OBJECT(tg)->ref == 1) {
+        tg->legacy = false;
+        /* Drop object created from legacy interface manually */
+        user_creatable_del(tg->name, &error_abort);
+    }
 }
 
 /* Get the name from a ThrottleGroupMember's group. The name (and the pointer)
@@ -490,14 +528,10 @@ static void write_timer_cb(void *opaque)
 }
 
 /* Register a ThrottleGroupMember from the throttling group, also initializing
- * its timers and updating its throttle_state pointer to point to it. If a
- * throttling group with that name does not exist yet, it will be created.
- *
- * This function edits throttle_groups and must be called under the global
- * mutex.
+ * its timers and updating its throttle_state pointer to point to it.
  *
  * @tgm:       the ThrottleGroupMember to insert
- * @groupname: the name of the group
+ * @groupname: the name of the group. It must already exist.
  * @ctx:       the AioContext to use
  */
 void throttle_group_register_tgm(ThrottleGroupMember *tgm,
@@ -690,8 +724,6 @@ static ThrottleParamInfo properties[] = {
     }
 };
 
-/* This function edits throttle_groups and must be called under the global
- * mutex */
 static void throttle_group_obj_init(Object *obj)
 {
     ThrottleGroup *tg = THROTTLE_GROUP(obj);
@@ -702,30 +734,23 @@ static void throttle_group_obj_init(Object *obj)
         tg->clock_type = QEMU_CLOCK_VIRTUAL;
     }
     tg->is_initialized = false;
+    tg->legacy = false;
     qemu_mutex_init(&tg->lock);
     throttle_init(&tg->ts);
     QLIST_INIT(&tg->head);
 }
 
-/* This function edits throttle_groups and must be called under the global
- * mutex */
 static void throttle_group_obj_complete(UserCreatable *obj, Error **errp)
 {
     ThrottleGroup *tg = THROTTLE_GROUP(obj);
     ThrottleConfig cfg;
 
-    /* set group name to object id if it exists */
+    /* set group name to object id */
     if (!tg->name && tg->parent_obj.parent) {
         tg->name = object_get_canonical_path_component(OBJECT(obj));
     }
     /* We must have a group name at this point */
     assert(tg->name);
-
-    /* error if name is duplicate */
-    if (throttle_group_exists(tg->name)) {
-        error_setg(errp, "A group with this name already exists");
-        return;
-    }
 
     /* check validity */
     throttle_get_config(&tg->ts, &cfg);
@@ -733,18 +758,12 @@ static void throttle_group_obj_complete(UserCreatable *obj, Error **errp)
         return;
     }
     throttle_config(&tg->ts, tg->clock_type, &cfg);
-    QTAILQ_INSERT_TAIL(&throttle_groups, tg, list);
     tg->is_initialized = true;
 }
 
-/* This function edits throttle_groups and must be called under the global
- * mutex */
 static void throttle_group_obj_finalize(Object *obj)
 {
     ThrottleGroup *tg = THROTTLE_GROUP(obj);
-    if (tg->is_initialized) {
-        QTAILQ_REMOVE(&throttle_groups, tg, list);
-    }
     qemu_mutex_destroy(&tg->lock);
     g_free(tg->name);
 }
@@ -881,7 +900,7 @@ static void throttle_group_get_limits(Object *obj, Visitor *v,
 
 static bool throttle_group_can_be_deleted(UserCreatable *uc, Error **errp)
 {
-    return OBJECT(uc)->ref == 1;
+    return OBJECT(uc)->ref == 1 && THROTTLE_GROUP(uc)->legacy == false;
 }
 
 static void throttle_group_obj_class_init(ObjectClass *klass, void *class_data)

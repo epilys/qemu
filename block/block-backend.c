@@ -1957,12 +1957,18 @@ void blk_io_limits_enable(BlockBackend *blk, const char *group,  Error **errp)
     BlockDriverState *bs = blk_bs(blk), *throttle_node;
     QDict *options = qdict_new();
     Error *local_err = NULL;
-    ThrottleState *ts;
+
+    /* Force creation of group in case it doesn't exist */
+    if (!throttle_group_exists(group)) {
+        throttle_group_new_legacy(group, &local_err);
+        if (local_err) {
+            error_propagate(errp, local_err);
+            return;
+        }
+    }
 
     bdrv_drained_begin(bs);
 
-    /* Force creation of group in case it doesn't exist */
-    ts = throttle_group_incref(group);
     qdict_set_default_str(options, "file", bs->node_name);
     qdict_set_default_str(options, QEMU_OPT_THROTTLE_GROUP_NAME, group);
     throttle_node = bdrv_new_open_driver(bdrv_find_format("throttle"), NULL,
@@ -1987,7 +1993,6 @@ void blk_io_limits_enable(BlockBackend *blk, const char *group,  Error **errp)
     assert(throttle_node->refcnt == 1);
 
 end:
-    throttle_group_unref(ts);
     bdrv_drained_end(bs);
     blk_get_public(blk)->throttle_node = throttle_node;
 }
