@@ -686,6 +686,9 @@ static void test_groups(void)
     g_assert(tgm2->throttle_state == NULL);
     g_assert(tgm3->throttle_state == NULL);
 
+    throttle_group_new_legacy("foo", &error_fatal);
+    throttle_group_new_legacy("bar", &error_fatal);
+
     throttle_group_register_tgm(tgm1, "bar", blk_get_aio_context(blk1));
     throttle_group_register_tgm(tgm2, "foo", blk_get_aio_context(blk2));
     throttle_group_register_tgm(tgm3, "bar", blk_get_aio_context(blk3));

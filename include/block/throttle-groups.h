@@ -58,7 +58,7 @@ typedef struct ThrottleGroupMember {
 
 const char *throttle_group_get_name(ThrottleGroupMember *tgm);
 
-ThrottleState *throttle_group_incref(const char *name);
+ThrottleState *throttle_group_new_legacy(const char *name, Error **errp);
 void throttle_group_unref(ThrottleState *ts);
 
 void throttle_group_config(ThrottleGroupMember *tgm, ThrottleConfig *cfg);

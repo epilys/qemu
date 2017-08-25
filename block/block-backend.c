@@ -1977,17 +1977,22 @@ void blk_io_limits_enable(BlockBackend *blk, const char *group,  Error **errp)
 {
     BlockDriverState *bs = blk_bs(blk), *throttle_node;
     QDict *options;
+    ThrottleState *ts = NULL;
     Error *local_err = NULL;
-    ThrottleState *ts;
 
     if (!bs) {
         return;
     }
 
-    bdrv_drained_begin(bs);
-
     /* Force creation of group in case it doesn't exist */
-    ts = throttle_group_incref(group);
+    if (!throttle_group_exists(group)) {
+        ts = throttle_group_new_legacy(group, errp);
+        if (!ts) {
+            return;
+        }
+    }
+
+    bdrv_drained_begin(bs);
 
     options = qdict_new();
     qdict_set_default_str(options, "file", bs->node_name);
@@ -2014,9 +2019,12 @@ void blk_io_limits_enable(BlockBackend *blk, const char *group,  Error **errp)
     assert(throttle_node->refcnt == 1);
 
 end:
-    throttle_group_unref(ts);
     bdrv_drained_end(bs);
     blk_get_public(blk)->throttle_node = throttle_node;
+    /* Give up our throttle group reference if we forced its creation */
+    if (ts) {
+        throttle_group_unref(ts);
+    }
 }
 
 void blk_io_limits_update_group(BlockBackend *blk, const char *group, Error **errp)
