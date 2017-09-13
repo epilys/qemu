@@ -2029,7 +2029,6 @@ void blk_io_limits_update_group(BlockBackend *blk, const char *group, Error **er
 
 static void blk_root_drained_begin(BdrvChild *child)
 {
-    ThrottleGroupMember *tgm;
     BlockBackend *blk = child->opaque;
 
     if (++blk->quiesce_counter == 1) {
@@ -2037,28 +2036,12 @@ static void blk_root_drained_begin(BdrvChild *child)
             blk->dev_ops->drained_begin(blk->dev_opaque);
         }
     }
-
-    /* Note that blk->root may not be accessible here yet if we are just
-     * attaching to a BlockDriverState that is drained. Use child instead. */
-    if (blk->throttle_node) {
-        tgm = throttle_get_tgm(blk->throttle_node);
-        if (atomic_fetch_inc(&tgm->io_limits_disabled) == 0) {
-            throttle_group_restart_tgm(tgm);
-        }
-    }
 }
 
 static void blk_root_drained_end(BdrvChild *child)
 {
-    ThrottleGroupMember *tgm;
     BlockBackend *blk = child->opaque;
     assert(blk->quiesce_counter);
-
-    if (blk->throttle_node) {
-        tgm = throttle_get_tgm(blk->throttle_node);
-        assert(tgm->io_limits_disabled);
-        atomic_dec(&tgm->io_limits_disabled);
-    }
 
     if (--blk->quiesce_counter == 0) {
         if (blk->dev_ops && blk->dev_ops->drained_end) {
