@@ -214,6 +214,23 @@ static bool bdrv_drain_recurse(BlockDriverState *bs)
     return waited;
 }
 
+static void bdrv_drain_end_recurse(BlockDriverState *bs)
+{
+    BdrvChild *child, *tmp;
+
+    if (bs->drv && bs->drv->bdrv_co_drain_end) {
+        bs->drv->bdrv_co_drain_end(bs);
+    }
+
+    QLIST_FOREACH_SAFE(child, &bs->children, next, tmp) {
+        BlockDriverState *bs = child->bs;
+        assert(bs->refcnt > 0);
+        bdrv_drain_end_recurse(bs);
+    }
+
+    return;
+}
+
 static void bdrv_co_drain_bh_cb(void *opaque)
 {
     BdrvCoDrainData *data = opaque;
@@ -273,6 +290,8 @@ void bdrv_drained_end(BlockDriverState *bs)
     }
 
     bdrv_parent_drained_end(bs);
+
+    bdrv_drain_end_recurse(bs);
     aio_enable_external(bdrv_get_aio_context(bs));
 }
 
