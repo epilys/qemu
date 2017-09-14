@@ -1608,7 +1608,7 @@ static BlockDriver bdrv_qed = {
     .bdrv_check               = bdrv_qed_check,
     .bdrv_detach_aio_context  = bdrv_qed_detach_aio_context,
     .bdrv_attach_aio_context  = bdrv_qed_attach_aio_context,
-    .bdrv_co_drain            = bdrv_qed_co_drain,
+    .bdrv_co_drain_begin      = bdrv_qed_co_drain,
 };
 
 static void bdrv_qed_init(void)

@@ -160,7 +160,7 @@ static void coroutine_fn bdrv_drain_invoke_entry(void *opaque)
     BdrvCoDrainData *data = opaque;
     BlockDriverState *bs = data->bs;
 
-    bs->drv->bdrv_co_drain(bs);
+    bs->drv->bdrv_co_drain_begin(bs);
 
     /* Set data->done before reading bs->wakeup.  */
     atomic_mb_set(&data->done, true);
@@ -171,7 +171,7 @@ static void bdrv_drain_invoke(BlockDriverState *bs)
 {
     BdrvCoDrainData data = { .bs = bs, .done = false };
 
-    if (!bs->drv || !bs->drv->bdrv_co_drain) {
+    if (!bs->drv || !bs->drv->bdrv_co_drain_begin) {
         return;
     }
 
