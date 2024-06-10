@@ -306,6 +306,15 @@ foreach lang : all_languages
   endif
 endforeach
 
+if have_rust
+  rust_args = []
+  if get_option('debug')
+    rust_args += ['-g']
+  endif
+  if get_option('optimization') not in ['0', '1', 'g']
+    rust_args += ['-O']
+  endif
+endif
 # default flags for all hosts
 # We use -fwrapv to tell the compiler that we require a C dialect where
 # left shift of signed integers is well defined and has the expected
@@ -3859,6 +3868,49 @@ common_all = static_library('common',
                             include_directories: common_user_inc,
                             implicit_include_directories: false,
                             dependencies: common_ss.all_dependencies())
+
+if have_rust and have_system
+  rust_args += run_command(
+    meson.global_source_root() / 'scripts/rustc_args.py',
+    '--config-headers', meson.project_build_root() / 'config-host.h',
+    capture : true,
+    check: true).stdout().strip().split()
+
+  bindings_rs = import('rust').bindgen(
+    input: 'rust/wrapper.h',
+    dependencies: common_ss.all_dependencies(),
+    output: 'bindings.rs',
+    include_directories: include_directories('.', 'include'),
+    bindgen_version: ['>=0.69.4'],
+    args: [
+      '--raw-line', '#![allow(dead_code)]',
+      '--raw-line', '#![allow(non_camel_case_types)]',
+      '--raw-line', '#![allow(non_snake_case)]',
+      '--raw-line', '#![allow(non_upper_case_globals)]',
+      '--raw-line', '#![allow(improper_ctypes_definitions)]',
+      '--raw-line', '#![allow(improper_ctypes)]',
+      '--raw-line', 'unsafe impl Send for Property {}',
+      '--raw-line', 'unsafe impl Sync for Property {}',
+      '--raw-line', 'unsafe impl Sync for TypeInfo {}',
+      '--raw-line', 'unsafe impl Sync for VMStateDescription {}',
+      '--ctypes-prefix', 'core::ffi',
+      '--formatter', 'rustfmt',
+      '--generate-block',
+      '--generate-cstr',
+      '--impl-debug',
+      '--merge-extern-blocks',
+      '--no-doc-comments',
+      '--no-include-path-detection',
+      '--use-core',
+      '--with-derive-default',
+      '--allowlist-file', meson.project_source_root() + '/include/.*',
+      '--allowlist-file', meson.project_source_root() + '/.*',
+      '--allowlist-file', meson.project_build_root() + '/.*'
+      ],
+    )
+  subdir('rust')
+endif
+
 
 feature_to_c = find_program('scripts/feature_to_c.py')
 
