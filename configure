@@ -874,6 +874,8 @@ Advanced options (experts only):
                            start the emulator (only use if you are including
                            desired devices in configs/devices/)
   --with-devices-ARCH=NAME override default configs/devices
+  --enable-rust            enable compilation of Rust code
+  --disable-rust           disable compilation of Rust code
   --enable-debug           enable common debug build options
   --cpu=CPU                Build for host CPU [$cpu]
   --disable-containers     don't use containers for cross-building
