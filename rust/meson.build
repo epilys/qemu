@@ -11,3 +11,5 @@ _lib_bindings_rs = static_library(
 )
 
 subdir('qemu-api')
+
+subdir('hw')
